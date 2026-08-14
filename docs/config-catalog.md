@@ -3498,6 +3498,22 @@ export type ToolPresentationMode = 'native' | 'ptc' | 'both'
 
 Source: [`packages/core/tools/src/index.ts:656`](../packages/core/tools/src/index.ts)
 
+<a id="deepseek-aidsh-tui-app"></a>
+
+## `@deepseek-ai/dsh-tui-app`
+
+Requires: `agentDefaultModel` · `agents` · `sessions`
+
+```ts config-catalog
+/** Plugin config: the invocation resolved from this app's injected provider service. */
+export interface Config {
+  /** The optional first prompt, submitted as soon as the TUI is ready. */
+  initialPrompt?: string
+}
+```
+
+Source: [`packages/bundle/tui-app/src/index.ts:47`](../packages/bundle/tui-app/src/index.ts)
+
 <a id="deepseek-aidsh-typert-loader"></a>
 
 ## `@deepseek-ai/dsh-typert-loader`
