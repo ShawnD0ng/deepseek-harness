@@ -253,3 +253,172 @@ describe('Transcript byte measurement edge', () => {
     expect(transcript.view()).toEqual([{ kind: 'tool-result', text: '✓ tool' }])
   })
 })
+
+describe('Transcript diff cards', () => {
+  it('renders a diff call view as path, removed, and added lines', () => {
+    const transcript = new Transcript({
+      presentCall: () => ({
+        card: 'diff',
+        title: 'Write a.txt',
+        diffs: [
+          { path: 'a.txt', oldText: null, newText: 'one\ntwo\n' },
+          { path: 'b.txt', oldText: 'gone\n', newText: 'kept\n' },
+          { path: 'c.txt', oldText: 'old', newText: 'new' },
+        ],
+      }),
+      presentResult: () => undefined,
+    })
+    transcript.consume(event('tool/call', {
+      turn: 0, step: 1, callId: 'c', name: 'write', arguments: '{}',
+    }))
+    expect(transcript.view()).toEqual([
+      { kind: 'tool', text: 'Write a.txt' },
+      { kind: 'diff-path', text: 'a.txt' },
+      { kind: 'diff-add', text: 'one' },
+      { kind: 'diff-add', text: 'two' },
+      { kind: 'diff-path', text: 'b.txt' },
+      { kind: 'diff-remove', text: 'gone' },
+      { kind: 'diff-add', text: 'kept' },
+      { kind: 'diff-path', text: 'c.txt' },
+      { kind: 'diff-remove', text: 'old' },
+      { kind: 'diff-add', text: 'new' },
+    ])
+  })
+
+  it('marks a same-file continuation with a gap and caps each diff side', () => {
+    const transcript = new Transcript({
+      presentCall: () => ({
+        card: 'diff',
+        title: 'Edit a.txt',
+        diffs: [
+          { path: 'a.txt', oldText: null, newText: 'first\n' },
+          { path: 'a.txt', oldText: null, newText: 'second\n' },
+          { path: 'a.txt', oldText: Array.from({ length: 12 }, (_v, index) => `r${index}`).join('\n') + '\n', newText: '' },
+          { path: 'a.txt', oldText: null, newText: Array.from({ length: 12 }, (_v, index) => `a${index}`).join('\n') + '\n' },
+        ],
+      }),
+      presentResult: () => undefined,
+    })
+    transcript.consume(event('tool/call', {
+      turn: 0, step: 1, callId: 'c', name: 'edit', arguments: '{}',
+    }))
+    const view = transcript.view()
+    expect(view.slice(1, 16)).toEqual([
+      { kind: 'diff-path', text: 'a.txt' },
+      { kind: 'diff-add', text: 'first' },
+      { kind: 'diff-path', text: '⋯' },
+      { kind: 'diff-add', text: 'second' },
+      { kind: 'diff-path', text: '⋯' },
+      ...Array.from({ length: 10 }, (_v, index) => ({ kind: 'diff-remove', text: `r${index}` })),
+    ])
+    expect(view.slice(-11, -1)).toEqual(
+      Array.from({ length: 10 }, (_v, index) => ({ kind: 'diff-add', text: `a${index}` })),
+    )
+    expect(view.at(-1)).toEqual({ kind: 'diff-add', text: '…' })
+  })
+
+  it('renders a diff result view with the reconstructed outcome', () => {
+    let received: unknown
+    const transcript = new Transcript({
+      presentCall: () => undefined,
+      presentResult: (name, args, result) => {
+        received = { name, args, result }
+        return { card: 'diff', title: 'Edit b.txt', diffs: [{ path: 'b.txt', oldText: 'x\n', newText: 'y\n' }] }
+      },
+    })
+    transcript.consume(event('tool/call', {
+      turn: 0, step: 1, callId: 'c', name: 'edit', arguments: '{"path":"b.txt"}',
+    }))
+    transcript.consume(event('tool/result', {
+      turn: 0,
+      step: 1,
+      meta: { note: 'm' },
+      message: {
+        role: 'user',
+        id: 'r',
+        content: [{
+          type: 'tool-result',
+          toolCallId: 'c',
+          content: [{ type: 'text', text: 'applied' }],
+        }],
+        source: { kind: 'tool', toolName: 'edit', callId: 'c' },
+      },
+    }))
+    expect(received).toEqual({
+      name: 'edit',
+      args: { path: 'b.txt' },
+      result: {
+        content: [{ type: 'text', text: 'applied' }],
+        isError: false,
+        meta: { note: 'm' },
+      },
+    })
+    expect(transcript.view()).toEqual([
+      { kind: 'tool', text: 'edit {"path":"b.txt"}' },
+      { kind: 'tool-result', text: '✓ Edit b.txt (7 B)' },
+      { kind: 'diff-path', text: 'b.txt' },
+      { kind: 'diff-remove', text: 'x' },
+      { kind: 'diff-add', text: 'y' },
+    ])
+  })
+
+  it('falls back to generic rendering when a projector throws', () => {
+    const transcript = new Transcript({
+      presentCall: () => { throw new Error('projector exploded') },
+      presentResult: () => { throw new Error('projector exploded') },
+    })
+    transcript.consume(event('tool/call', {
+      turn: 0, step: 1, callId: 'c', name: 'bash', arguments: '{}',
+    }))
+    transcript.consume(event('tool/result', {
+      turn: 0,
+      step: 1,
+      message: {
+        role: 'user',
+        id: 'r',
+        content: [{ type: 'tool-result', toolCallId: 'c', content: [{ type: 'text', text: 'ok' }] }],
+        source: { kind: 'tool', toolName: 'bash', callId: 'c' },
+      },
+    }))
+    expect(transcript.view()).toEqual([
+      { kind: 'tool', text: 'bash {}' },
+      { kind: 'tool-result', text: '✓ bash (2 B)' },
+    ])
+  })
+
+  it('shows a failed diff result without a title under the tool name', () => {
+    const transcript = new Transcript({
+      presentCall: () => undefined,
+      presentResult: () => ({ card: 'diff', diffs: [{ path: 'a.txt', oldText: 'x\n', newText: '' }] }),
+    })
+    transcript.consume(event('tool/call', {
+      turn: 0, step: 1, callId: 'c', name: 'edit', arguments: '{}',
+    }))
+    transcript.consume(event('tool/result', {
+      turn: 0,
+      step: 1,
+      error: { name: 'X', code: 'BROKEN' },
+      message: {
+        role: 'user',
+        id: 'r',
+        content: [{ type: 'tool-result', toolCallId: 'c', content: [] }],
+        source: { kind: 'tool', toolName: 'edit', callId: 'c' },
+      },
+    }))
+    expect(transcript.view()).toEqual([
+      { kind: 'tool', text: 'edit {}' },
+      { kind: 'tool-result', text: '✗ edit' },
+      { kind: 'diff-path', text: 'a.txt' },
+      { kind: 'diff-remove', text: 'x' },
+    ])
+  })
+
+  it('lists the user-prompt record indices', () => {
+    const transcript = new Transcript()
+    transcript.push('user', 'one')
+    transcript.push('assistant', 'a')
+    transcript.push('user', 'two')
+    transcript.push('info', 'i')
+    expect(transcript.userIndices()).toEqual([0, 2])
+  })
+})

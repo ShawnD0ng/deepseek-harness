@@ -27,6 +27,12 @@
       "path": "../../core/session"
     },
     {
+      "path": "../../core/tools"
+    },
+    {
+      "path": "../../llm/token-meter"
+    },
+    {
       "path": "../../interaction/user-approval"
     },
     {

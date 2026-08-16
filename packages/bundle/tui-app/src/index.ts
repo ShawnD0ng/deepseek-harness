@@ -18,6 +18,8 @@ import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type TokenMeter from '@deepseek-ai/dsh-token-meter'
+import type ToolRuntime from '@deepseek-ai/dsh-tools'
 import {
   UserQuestionError,
   type AskUserQuestionAnswerItem,
@@ -34,9 +36,10 @@ import type {} from '@deepseek-ai/dsh-cmdline'
 import { PromptHistory } from './history.ts'
 import { commandCandidates, completedCommand } from './complete.ts'
 import type { Key } from './keys.ts'
-import { composeFrame, diffFrames, type Frame, type FrameInput } from './render.ts'
+import { composeFrame, diffFrames, wrapText, type Frame, type FrameInput } from './render.ts'
 import { createTtyTerminal, type TerminalDriver, type TtyInput, type TtyOutput } from './terminal.ts'
-import { Transcript } from './transcript.ts'
+import { Transcript, type ToolPresenter } from './transcript.ts'
+import { findWordBackward, findWordForward } from './word.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'tui-runner'
@@ -145,8 +148,22 @@ async function run(
   // Fails loud when the process has no interactive terminal.
   const terminal = internals.createTerminal(io.stdin, io.stdout)
   held.terminal = terminal
+  const toolsService = ctx.get('tools') as ToolRuntime | undefined
+  // Bridge the shared tool registry's declared card views into the transcript;
+  // the transcript contains projector failures itself.
+  const presenter: ToolPresenter | undefined = toolsService === undefined ? undefined : {
+    presentCall(name, args) {
+      const definition = toolsService.get(name)
+      return definition?.presentCall?.(args)
+    },
+    presentResult(name, args, result) {
+      const definition = toolsService.get(name)
+      return definition?.presentResult?.(args, result)
+    },
+  }
+  const tokenMeter = ctx.get('tokenMeter') as TokenMeter | undefined
 
-  const transcript = new Transcript()
+  const transcript = new Transcript(presenter)
   const history = new PromptHistory()
   const color = process.env.NO_COLOR === undefined
 
@@ -170,15 +187,26 @@ async function run(
   let selected = 0
   let toggled = new Set<number>()
   let completion: { options: readonly string[]; selected: number } | undefined
+  let killRing: string[] = []
+  let yankSpan: { start: number; length: number; text: string; index: number } | undefined
+  let contextTokens: number | undefined
+
+  /** Humanize one token count for the status row. */
+  function formatTokens(tokens: number): string {
+    if (tokens >= 10000) return `${(tokens / 1000).toFixed(0)}k`
+    if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`
+    return String(tokens)
+  }
 
   /** Paint one frame; the diff only rewrites changed rows. */
   function render(): void {
+    const contextLabel = contextTokens === undefined ? '' : ` · ctx ${formatTokens(contextTokens)}`
     const input: FrameInput = {
       body: transcript.lines(),
       bodyOffset,
       status: {
         left: `${selection.provider} ${selection.model}`,
-        right: busy ? `turn ${turn}` : 'ready',
+        right: `${busy ? `turn ${turn}` : 'ready'}${contextLabel}`,
         busy,
         spinner: renderCount,
       },
@@ -330,20 +358,142 @@ async function run(
     requestRender()
   }
 
-  /** Delete trailing whitespace and the word before the cursor (ctrl-w). */
+  /** Delete trailing whitespace and the word before the cursor (ctrl-w), remembering it for yank. */
   function deleteWord(): void {
     let end = cursor
     while (end > 0 && buffer[end - 1]! === ' ') end -= 1
     while (end > 0 && buffer[end - 1]! !== ' ') end -= 1
+    pushKill(buffer.slice(end, cursor))
     buffer = buffer.slice(0, end) + buffer.slice(cursor)
     cursor = end
+    requestRender()
+  }
+
+  /** Delete the word at the cursor (alt+d), remembering it for yank. */
+  function deleteWordForward(): void {
+    if (cursor >= buffer.length) return
+    const end = findWordForward(buffer, cursor)
+    pushKill(buffer.slice(cursor, end))
+    buffer = buffer.slice(0, cursor) + buffer.slice(end)
+    requestRender()
+  }
+
+  /** Delete to the line end (ctrl+k), remembering it for yank. */
+  function deleteToEnd(): void {
+    if (cursor >= buffer.length) return
+    pushKill(buffer.slice(cursor))
+    buffer = buffer.slice(0, cursor)
+    requestRender()
+  }
+
+  /** Delete to the line start (ctrl+u), remembering it for yank. */
+  function deleteToStart(): void {
+    if (cursor <= 0) return
+    pushKill(buffer.slice(0, cursor))
+    buffer = buffer.slice(cursor)
+    cursor = 0
+    requestRender()
+  }
+
+  /** Alt-character bindings (the terminal encodes alt as ESC + character). */
+  function handleAltChar(char: string): void {
+    switch (char) {
+      case 'b':
+        cursor = findWordBackward(buffer, cursor)
+        requestRender()
+        break
+      case 'f':
+        cursor = findWordForward(buffer, cursor)
+        requestRender()
+        break
+      case 'd':
+        deleteWordForward()
+        break
+      case 'y':
+        yankPop()
+        break
+      default:
+        break
+    }
+  }
+
+  /** Remember one killed span for later yanking. */
+  function pushKill(text: string): void {
+    if (text === '') return
+    killRing = [text, ...killRing].slice(0, 10)
+  }
+
+  /** Insert the most recent kill at the cursor. */
+  function yank(): void {
+    const text = killRing[0]
+    if (text === undefined) return
+    buffer = buffer.slice(0, cursor) + text + buffer.slice(cursor)
+    yankSpan = { start: cursor, length: text.length, text, index: 0 }
+    cursor += text.length
+    requestRender()
+  }
+
+  /** Swap the yanked span for the previous kill (alt+y). */
+  function yankPop(): void {
+    if (yankSpan === undefined || killRing.length < 2) return
+    // The span only tracks the yanked text; a buffer replaced wholesale
+    // (history, submit, a new question) ends the span instead.
+    if (buffer.slice(yankSpan.start, yankSpan.start + yankSpan.length) !== yankSpan.text) {
+      yankSpan = undefined
+      return
+    }
+    const index = (yankSpan.index + 1) % killRing.length
+    const text = killRing[index]!
+    buffer = buffer.slice(0, yankSpan.start) + text + buffer.slice(yankSpan.start + yankSpan.length)
+    cursor = yankSpan.start + text.length
+    yankSpan = { start: yankSpan.start, length: text.length, text, index }
+    requestRender()
+  }
+
+  /** Scroll the transcript viewport by `lines` wrapped rows (negative scrolls toward the bottom). */
+  function scrollBy(lines: number): void {
+    bodyOffset = lines >= 0 ? bodyOffset + lines : Math.max(0, bodyOffset + lines)
     requestRender()
   }
 
   /** Scroll the transcript viewport by one page. */
   function scroll(direction: 1 | -1): void {
     const page = Math.max(1, terminal.height - 4)
-    bodyOffset = direction === 1 ? bodyOffset + page : Math.max(0, bodyOffset - page)
+    scrollBy(direction === 1 ? page : -page)
+  }
+
+  /** Jump the viewport so the previous (or next) user prompt sits at the top. */
+  function jumpPrompt(direction: 1 | -1): void {
+    const body = transcript.lines()
+    const userIndices = transcript.userIndices()
+    if (userIndices.length === 0) return
+    const width = Math.max(1, terminal.width)
+    // The renderer's body viewport: everything but the status row and the
+    // single input row (a completion popup or a wrapped input shrinks it
+    // further, which only nudges the landing row).
+    const height = Math.max(1, terminal.height - 2)
+    // First wrapped row of each entry, matching the renderer's wrap.
+    const starts: number[] = []
+    let total = 0
+    for (const line of body) {
+      starts.push(total)
+      total += wrapText(line.text, width).length
+    }
+    const top = Math.max(0, total - height - bodyOffset)
+    // The focused prompt is the last one whose first row is at or above the top.
+    let focus = 0
+    for (let index = 0; index < userIndices.length; index++) {
+      if (starts[userIndices[index]!]! <= top) focus = index
+      else break
+    }
+    const target = focus + direction
+    if (target < 0) return
+    if (target >= userIndices.length) {
+      bodyOffset = 0
+      requestRender()
+      return
+    }
+    bodyOffset = Math.max(0, total - height - starts[userIndices[target]!]!)
     requestRender()
   }
 
@@ -401,6 +551,12 @@ async function run(
       case 'up':
         if (complete && completion !== undefined) {
           moveCompletion(-1)
+        } else if (key.modifiers?.includes('ctrl') === true && key.modifiers?.includes('shift') === true) {
+          jumpPrompt(-1)
+        } else if (key.modifiers?.includes('ctrl') === true) {
+          scrollBy(Math.ceil((Math.max(1, terminal.height - 4)) / 2))
+        } else if (key.modifiers?.includes('alt') === true) {
+          scrollBy(1)
         } else {
           buffer = history.navigate(1, buffer)
           cursor = buffer.length
@@ -410,6 +566,12 @@ async function run(
       case 'down':
         if (complete && completion !== undefined) {
           moveCompletion(1)
+        } else if (key.modifiers?.includes('ctrl') === true && key.modifiers?.includes('shift') === true) {
+          jumpPrompt(1)
+        } else if (key.modifiers?.includes('ctrl') === true) {
+          scrollBy(-Math.ceil((Math.max(1, terminal.height - 4)) / 2))
+        } else if (key.modifiers?.includes('alt') === true) {
+          scrollBy(-1)
         } else {
           buffer = history.navigate(-1, buffer)
           cursor = buffer.length
@@ -451,7 +613,8 @@ async function run(
   function handleEditKey(key: Key): void {
     switch (key.kind) {
       case 'char':
-        insertChar(key.char)
+        if (key.modifiers?.includes('alt') === true) handleAltChar(key.char)
+        else insertChar(key.char)
         break
       case 'backspace':
         backspace()
@@ -460,11 +623,15 @@ async function run(
         deleteForward()
         break
       case 'left':
-        cursor = Math.max(0, cursor - 1)
+        cursor = (key.modifiers?.length ?? 0) > 0
+          ? findWordBackward(buffer, cursor)
+          : Math.max(0, cursor - 1)
         requestRender()
         break
       case 'right':
-        cursor = Math.min(buffer.length, cursor + 1)
+        cursor = (key.modifiers?.length ?? 0) > 0
+          ? findWordForward(buffer, cursor)
+          : Math.min(buffer.length, cursor + 1)
         requestRender()
         break
       case 'home':
@@ -492,12 +659,16 @@ async function run(
             requestRender()
             break
           case 'u':
-            buffer = ''
-            cursor = 0
-            requestRender()
+            deleteToStart()
+            break
+          case 'k':
+            deleteToEnd()
             break
           case 'w':
             deleteWord()
+            break
+          case 'y':
+            yank()
             break
           case 'n':
             buffer = history.navigate(-1, buffer)
@@ -772,6 +943,7 @@ async function run(
     } else if (event.type === 'turn/end') {
       busy = false
       flushSession()
+      if (tokenMeter !== undefined) contextTokens = tokenMeter.measure(eventSession).totalTokens
     }
     transcript.consume(event)
     const added = transcript.view().length - before

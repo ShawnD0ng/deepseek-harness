@@ -5,7 +5,7 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
 import AgentDefaultModelConfig from '@deepseek-ai/dsh-agent-default-model'
-import { CallId, MessageId, createAssistantMessage } from '@deepseek-ai/dsh-llm'
+import { CallId, MessageId, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
@@ -44,7 +44,13 @@ function appendTurn(session: Session, turn: number, message: UserMessage, text: 
 }
 
 /** Mount the real registries around a scripted Agent factory and boot the TUI on a virtual terminal. */
-async function bench(script: Script, options: { loader?: { await(): Promise<void> } } = {}): Promise<{
+async function bench(script: Script, options: {
+  loader?: { await(): Promise<void> }
+  /** Optional service fakes provided before the runner applies. */
+  extra?: (ctx: Context) => void
+  /** Terminal width in columns (default 40). */
+  width?: number
+} = {}): Promise<{
   ctx: Context
   terminal: VirtualTerminal
   created: Promise<Agent>
@@ -59,12 +65,13 @@ async function bench(script: Script, options: { loader?: { await(): Promise<void
   await ctx.plugin(ApprovalService)
   await ctx.plugin(CommandRuntime)
 
-  const terminal = new VirtualTerminal({ width: 40, height: 10 })
+  const terminal = new VirtualTerminal({ width: options.width ?? 40, height: 10 })
   internals.createTerminal = () => terminal
   let err = ''
   internals.stderr = { write: (chunk: string) => { err += chunk; return true } }
 
   if (options.loader !== undefined) ctx.provide('loader', options.loader)
+  if (options.extra !== undefined) options.extra(ctx)
   let createdAgent!: (agent: Agent) => void
   const created = new Promise<Agent>((resolve) => { createdAgent = resolve })
 
@@ -423,6 +430,214 @@ describe('tui-runner', () => {
     expect(test.terminal.output).not.toContain('› /')
     expect(test.terminal.output).toContain('❯ /')
     await test.created
+    await test.ctx.fiber.dispose()
+  })
+
+  it('navigates and deletes by word with a kill ring and yank', async () => {
+    const test = await bench({})
+    await test.created
+    await settle()
+    // Prompt jumps with no user prompts in the transcript are no-ops.
+    test.terminal.feed('\x1b[1;6A\x1b[1;6B')
+    await settle()
+    test.terminal.feed('one two three')
+    await settle()
+    expect(test.terminal.output).toContain('❯ one two three')
+    // Yank with an empty ring and alt+y with no span are no-ops; so are
+    // alt+d and ctrl+k at the line end, ctrl+u and ctrl+w at the start, and
+    // an unknown alt character. ctrl+e restores the cursor to the end.
+    test.terminal.feed('\x19\x1by\x1bd\x0b\x01\x15\x1bz\x17\x05')
+    await settle()
+    expect(test.terminal.output).toContain('❯ one two three')
+    // ctrl+left, ctrl+right, alt+f, and alt+b move by word; the following
+    // alt+d shows the landing spot.
+    test.terminal.feed('\x1b[1;5D\x1b[1;5C\x1bf\x1bb')
+    test.terminal.feed('\x1bd')
+    await settle()
+    expect(test.terminal.output).toContain('❯ one two ')
+    // ctrl+y yanks the killed word back.
+    test.terminal.feed('\x19')
+    await settle()
+    expect(test.terminal.output).toContain('❯ one two three')
+    // A second kill ('four' word), then ctrl+k empties the line into the ring.
+    test.terminal.feed('\x1b[1;5D\x1bdfour')
+    await settle()
+    expect(test.terminal.output).toContain('❯ one two four')
+    test.terminal.feed('\x01\x0b')
+    await settle()
+    expect(test.terminal.output).toContain('❯ ask the agent — /help lists commands')
+    // Yank restores the newest kill; alt+y rotates to the previous one.
+    test.terminal.feed('\x19')
+    await settle()
+    expect(test.terminal.output).toContain('❯ one two four')
+    test.terminal.feed('\x1by')
+    await settle()
+    expect(test.terminal.output).toContain('❯ three')
+    // ctrl+u with the cursor at the end clears the line; a stale yank span
+    // no longer matches, so alt+y stays a no-op.
+    test.terminal.feed('\x15')
+    await settle()
+    expect(test.terminal.output).toContain('❯ ask the agent — /help lists commands')
+    test.terminal.feed('\x1by')
+    await settle()
+    expect(test.terminal.output).toContain('❯ ask the agent — /help lists commands')
+    // ctrl+u mid-line deletes to the start only.
+    test.terminal.feed('abc\x01x\x15')
+    await settle()
+    expect(test.terminal.output).toContain('❯ abc')
+    await test.ctx.fiber.dispose()
+  })
+
+  it('scrolls by line and half page and jumps between user prompts', async () => {
+    let turn = 0
+    const prompted: (() => void)[] = []
+    const test = await bench({
+      afterPrompt(session, message) {
+        turn += 1
+        const letter = turn === 1 ? 'a' : turn === 2 ? 'b' : turn === 3 ? 'c' : 'd'
+        const reply = turn === 4 ? letter.repeat(270) : letter.repeat(90)
+        appendTurn(session, turn, message, reply)
+        prompted.shift()?.()
+      },
+    })
+    await test.created
+    const settleTurn = async (line: string): Promise<void> => {
+      const done = new Promise<void>((resolve) => { prompted.push(resolve) })
+      test.terminal.feed(`${line}\r`)
+      await done
+      await settle()
+    }
+    // Four turns: prompts are one row each and replies wrap to 3, 3, 3, and 7
+    // rows (20 wrapped body rows against an 8-row viewport).
+    await settleTurn('u1')
+    await settleTurn('u2')
+    await settleTurn('u3')
+    await settleTurn('u4')
+    // Bottom view: the fourth prompt sits at the top row.
+    expect(test.terminal.output).toContain('\x1b[1;1H› u4\x1b[K')
+    // alt+up scrolls one line up: the last row of the third reply.
+    test.terminal.feed('\x1b[1;3A')
+    await settle()
+    expect(test.terminal.output).toContain(`\x1b[1;1H${'c'.repeat(10)}\x1b[K`)
+    // alt+down returns to the bottom.
+    test.terminal.feed('\x1b[1;3B')
+    await settle()
+    expect(test.terminal.output).toContain('\x1b[1;1H› u4\x1b[K')
+    // ctrl+up scrolls half a page (3 rows): the third reply's first row.
+    test.terminal.feed('\x1b[1;5A')
+    await settle()
+    expect(test.terminal.output).toContain(`\x1b[1;1H${'c'.repeat(40)}\x1b[K`)
+    // ctrl+down scrolls half a page back to the bottom.
+    test.terminal.feed('\x1b[1;5B')
+    await settle()
+    expect(test.terminal.output).toContain('\x1b[1;1H› u4\x1b[K')
+    // ctrl+shift+up jumps prompt by prompt to the first one.
+    test.terminal.feed('\x1b[1;6A')
+    await settle()
+    expect(test.terminal.output).toContain('\x1b[1;1H› u3\x1b[K')
+    test.terminal.feed('\x1b[1;6A')
+    await settle()
+    expect(test.terminal.output).toContain('\x1b[1;1H› u2\x1b[K')
+    test.terminal.feed('\x1b[1;6A')
+    await settle()
+    expect(test.terminal.output).toContain('\x1b[1;1H› u1\x1b[K')
+    // ctrl+shift+up at the first prompt stays put.
+    test.terminal.feed('\x1b[1;6A')
+    await settle()
+    expect(test.terminal.output).toContain('\x1b[1;1H› u1\x1b[K')
+    // ctrl+shift+down walks forward; past the last prompt it rests at the bottom.
+    test.terminal.feed('\x1b[1;6B')
+    await settle()
+    expect(test.terminal.output).toContain('\x1b[1;1H› u2\x1b[K')
+    test.terminal.feed('\x1b[1;6B')
+    await settle()
+    expect(test.terminal.output).toContain('\x1b[1;1H› u3\x1b[K')
+    test.terminal.feed('\x1b[1;6B\x1b[1;6B')
+    await settle()
+    expect(test.terminal.output).toContain('\x1b[1;1H› u4\x1b[K')
+    await test.ctx.fiber.dispose()
+  })
+
+  it('shows the measured context tokens in the status bar', async () => {
+    let totalTokens = 4321
+    const test = await bench({}, {
+      width: 80,
+      extra: ctx => ctx.provide('tokenMeter', { measure: () => ({ totalTokens }) }),
+    })
+    const agent = await test.created
+    await settle()
+    expect(test.terminal.output).toContain('ready')
+    const runTurn = (turn: number, tokens: number): void => {
+      totalTokens = tokens
+      appendTurn(agent.session, turn, createUserMessage({
+        content: [{ type: 'text', text: `hi ${turn}` }],
+        source: { kind: 'user' },
+      }), 'reply')
+    }
+    runTurn(1, 4321)
+    await settle()
+    expect(test.terminal.output).toContain('ready · ctx 4.3k')
+    runTurn(2, 123)
+    await settle()
+    expect(test.terminal.output).toContain('ready · ctx 123')
+    runTurn(3, 15000)
+    await settle()
+    expect(test.terminal.output).toContain('ready · ctx 15k')
+    await test.ctx.fiber.dispose()
+  })
+
+  it('renders tool diff cards through the tools bridge', async () => {
+    let presented = 0
+    const test = await bench({}, {
+      extra: ctx => ctx.provide('tools', {
+        get: (name: string) => name === 'edit'
+          ? {
+              presentCall: (args: unknown) => {
+                presented += 1
+                const path = (args as { path: string }).path
+                return {
+                  card: 'diff' as const,
+                  title: `Edit ${path}`,
+                  diffs: [{ path, oldText: 'x\n', newText: 'y\n' }],
+                }
+              },
+              presentResult: (args: unknown) => {
+                presented += 1
+                const path = (args as { path: string }).path
+                return {
+                  card: 'diff' as const,
+                  title: `Edited ${path}`,
+                  diffs: [{ path, oldText: 'p\n', newText: 'q\n' }],
+                }
+              },
+            }
+          : undefined,
+      }),
+    })
+    const agent = await test.created
+    await settle()
+    agent.session.append('tool/call', {
+      turn: 1, step: 1, callId: CallId('c1'), name: 'edit', arguments: '{"path":"a.ts"}',
+    })
+    await settle()
+    expect(test.terminal.output).toContain('Edit a.ts')
+    expect(test.terminal.output).toContain('- x')
+    expect(test.terminal.output).toContain('+ y')
+    agent.session.append('tool/result', {
+      turn: 1,
+      step: 1,
+      message: {
+        role: 'user',
+        id: MessageId('r1'),
+        content: [{ type: 'tool-result', toolCallId: CallId('c1'), content: [{ type: 'text', text: 'done' }] }],
+        source: { kind: 'tool', callId: CallId('c1') },
+      },
+    }, { surfaceOp: 'append' })
+    await settle()
+    expect(test.terminal.output).toContain('Edited a.ts')
+    expect(test.terminal.output).toContain('- p')
+    expect(test.terminal.output).toContain('+ q')
+    expect(presented).toBe(2)
     await test.ctx.fiber.dispose()
   })
 

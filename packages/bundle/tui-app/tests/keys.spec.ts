@@ -40,8 +40,21 @@ describe('parseKeys', () => {
   })
 
   it('decodes modified arrows through their params', () => {
-    expect(collect(['\x1b[1;5A'])).toEqual([{ kind: 'up' }])
-    expect(collect(['\x1b[1;5C'])).toEqual([{ kind: 'right' }])
+    expect(collect(['\x1b[1;5A'])).toEqual([{ kind: 'up', modifiers: ['ctrl'] }])
+    expect(collect(['\x1b[1;5C'])).toEqual([{ kind: 'right', modifiers: ['ctrl'] }])
+    expect(collect(['\x1b[1;6B'])).toEqual([{ kind: 'down', modifiers: ['shift', 'ctrl'] }])
+    expect(collect(['\x1b[1;3D'])).toEqual([{ kind: 'left', modifiers: ['alt'] }])
+    expect(collect(['\x1b[1;2A'])).toEqual([{ kind: 'up', modifiers: ['shift'] }])
+    expect(collect(['\x1b[1;4A'])).toEqual([{ kind: 'up', modifiers: ['shift', 'alt'] }])
+    expect(collect(['\x1b[1;7A'])).toEqual([{ kind: 'up', modifiers: ['alt', 'ctrl'] }])
+    expect(collect(['\x1b[1;8A'])).toEqual([{ kind: 'up', modifiers: ['shift', 'alt', 'ctrl'] }])
+    // An unknown modifier bit decodes as the plain key.
+    expect(collect(['\x1b[1;9A'])).toEqual([{ kind: 'up' }])
+  })
+
+  it('decodes ESC before a printable character as an alt character', () => {
+    expect(collect(['\x1bb'])).toEqual([{ kind: 'char', char: 'b', modifiers: ['alt'] }])
+    expect(collect(['\x1b你'])).toEqual([{ kind: 'char', char: '你', modifiers: ['alt'] }])
   })
 
   it('decodes SS3 keys', () => {
@@ -89,7 +102,8 @@ describe('parseKeys', () => {
 
   it('drops unrecognized sequences without leaking control text', () => {
     expect(collect(['\x1b[99~'])).toEqual([])
-    expect(collect(['\x1bZ'])).toEqual([])
+    // ESC before a control character is not an alt binding: the pair drops.
+    expect(collect(['\x1b\r'])).toEqual([])
     expect(collect(['\x1bO9'])).toEqual([])
   })
 

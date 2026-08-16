@@ -10,22 +10,27 @@
  * Unrecognized sequences are dropped so a stray escape never leaks control
  * text into the input buffer. Bracketed paste (`ESC[200~` … `ESC[201~`) emits
  * its content as character keys with line breaks collapsed to spaces,
- * matching the TUI's single-line input.
+ * matching the TUI's single-line input. `ESC` before a printable character
+ * emits that character with the `alt` modifier (the terminal's alt encoding),
+ * and CSI arrow sequences carry their shift/alt/ctrl modifier bits.
  * @module @deepseek-ai/dsh-tui-app/keys
  */
 
+/** Keyboard modifiers carried by arrow and alt-character keys. */
+export type Modifier = 'shift' | 'alt' | 'ctrl'
+
 /** One decoded keystroke. */
 export type Key =
-  | { readonly kind: 'char'; readonly char: string }
+  | { readonly kind: 'char'; readonly char: string; readonly modifiers?: readonly Modifier[] }
   | { readonly kind: 'enter' }
   | { readonly kind: 'tab' }
   | { readonly kind: 'backspace' }
   | { readonly kind: 'delete' }
   | { readonly kind: 'escape' }
-  | { readonly kind: 'up' }
-  | { readonly kind: 'down' }
-  | { readonly kind: 'left' }
-  | { readonly kind: 'right' }
+  | { readonly kind: 'up'; readonly modifiers?: readonly Modifier[] }
+  | { readonly kind: 'down'; readonly modifiers?: readonly Modifier[] }
+  | { readonly kind: 'left'; readonly modifiers?: readonly Modifier[] }
+  | { readonly kind: 'right'; readonly modifiers?: readonly Modifier[] }
   | { readonly kind: 'home' }
   | { readonly kind: 'end' }
   | { readonly kind: 'page-up' }
@@ -77,6 +82,20 @@ const TILDE_KEYS: Readonly<Record<string, Key>> = {
 function ctrlKey(code: number): Key | undefined {
   if (code >= 0x01 && code <= 0x1a) return { kind: 'ctrl', letter: String.fromCharCode(code + 0x60) }
   return undefined
+}
+
+/** xterm modifier parameter (the `N` of `1;N<final>`): 2 shift, 3 alt, 5 ctrl, summed bits combine. */
+function csiModifiers(param: string): readonly Modifier[] {
+  switch (param) {
+    case '2': return ['shift']
+    case '3': return ['alt']
+    case '4': return ['shift', 'alt']
+    case '5': return ['ctrl']
+    case '6': return ['shift', 'ctrl']
+    case '7': return ['alt', 'ctrl']
+    case '8': return ['shift', 'alt', 'ctrl']
+    default: return []
+  }
 }
 
 /** Emit one paste buffer's characters (line breaks already normalized). */
@@ -136,6 +155,10 @@ export function parseKeys(): KeyParser {
               // ESC ESC: one escape key, back at ground for the next byte.
               keys.push({ kind: 'escape' })
               state = { kind: 'ground' }
+            } else if (char >= ' ' && char !== '\x7f') {
+              // Alt+<printable> arrives as ESC followed by the character.
+              keys.push({ kind: 'char', char, modifiers: ['alt'] })
+              state = { kind: 'ground' }
             } else {
               // Not a tracked sequence: the whole pair is dropped.
               state = { kind: 'ground' }
@@ -174,10 +197,19 @@ export function parseKeys(): KeyParser {
             // Any other final byte: arrows and friends, bare or `1`-prefixed
             // (modified arrows carry `1;5`-style params).
             state = { kind: 'ground' }
-            if (CSI_FINAL[char] !== undefined) {
+            const final = CSI_FINAL[char]
+            if (final !== undefined) {
               // `split` always yields a head; bare arrows carry empty params.
-              const first = params.split(';')[0]!
-              if (first === '' || first === '1') keys.push(CSI_FINAL[char])
+              const parts = params.split(';')
+              const first = parts[0]!
+              if (first === '' || first === '1') {
+                const modifiers = parts.length > 1 ? csiModifiers(parts[1]!) : []
+                if (final.kind === 'up' || final.kind === 'down' || final.kind === 'left' || final.kind === 'right') {
+                  keys.push(modifiers.length > 0 ? { kind: final.kind, modifiers } : final)
+                } else {
+                  keys.push(final)
+                }
+              }
             }
             break
           }
