@@ -8,6 +8,8 @@ Loader 就绪后，runner 读取共享的 [`ctx.agentDefaultModel`](../../core/a
 
 终端层是确定性的手写实现：基于 wcwidth 的显示宽度表（[`src/width.ts`](src/width.ts)）、支持修饰箭头与 alt 字符解码的转义序列按键解析器（[`src/keys.ts`](src/keys.ts)）、无区域依赖的单词导航（[`src/word.ts`](src/word.ts)）、纯函数帧合成与行差异渲染器（[`src/render.ts`](src/render.ts)），以及驱动接缝（[`src/terminal.ts`](src/terminal.ts)）——其生产实现管理 raw 模式、备用屏幕与窗口尺寸变化，`VirtualTerminal` 则为测试服务。仅当未设置 `NO_COLOR` 时才输出样式；`TERM=dumb` 或非 TTY 标准流会立即报错并提示改用 headless profile。
 
+会话可以续接而不是重新开始：`dsh tui --resume <id>` 经 `ctx.agents.resume` 加载持久化会话并把日志回放进记录，`dsh tui --resume`（不带 id）从 `ctx.sessionQuery` 打开最近会话选择器（`↑`/`↓` 选择、Enter 确认、Esc 取消转新会话），`dsh tui --list` 打印最近会话并退出。
+
 编辑器按区间 kill（`Ctrl+W` 删前一单词、`Alt+D` 删后一单词、`Ctrl+U` 删到行首、`Ctrl+K` 删到行尾）并存入小型 kill ring，用 `Ctrl+Y`/`Alt+Y` 粘贴，用 `Alt+B`/`Alt+F` 或 `Ctrl+←`/`Ctrl+→` 按单词移动。视口支持整页翻页、半页（`Ctrl+↑`/`Ctrl+↓`）、单行（`Alt+↑`/`Alt+↓`）滚动，以及用户提示词之间的跳转（`Ctrl+Shift+↑`/`Ctrl+Shift+↓`）。
 
 通过共享呈现词汇表声明 `card: 'diff'` 视图的工具（[`dsh-tools`](../../core/tools/README.md)）在记录中渲染为着色的路径、删除与新增行；其他调用保持通用的"名称+参数"折叠。当组装包含 [`dsh-token-meter`](../../llm/token-meter/README.md) 时，状态栏在每个回合后显示实测的上下文 token 数（`ready · ctx 4.3k`）。
@@ -24,7 +26,7 @@ runner 在 `/exit`、`Ctrl+D` 或空闲时按 `Ctrl+C` 时通过启动器提供�
 
 ## Known Limitations and Deferred Work
 
-- **每次启动只有一个会话** — 尚未实现 `--resume`；每次启动都从新会话开始，提示词历史仅保存在内存中。
+- **没有会话标题** — resume 选择器与 `--list` 只显示会话 id 与创建时间；dsh 的 session-title 投影尚未接入列表。
 - **单行输入** — 编辑器会对长提示词软换行，但粘贴的换行会折叠为空格；没有多行编辑模式。
 - **只补全命令名** — Tab 仅在行仍是纯命令前缀时补全行首命令 token；命令参数没有候选。
 - **单词导航基于空白符** — `Alt+B/F` 与各 kill 操作把任意非单词、非空白字符段（含非拉丁文字）当作一个单位；尚未实现真正的文本分词器。

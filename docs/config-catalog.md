@@ -3509,10 +3509,16 @@ Requires: `agentDefaultModel` · `agents` · `sessions`
 export interface Config {
   /** The optional first prompt, submitted as soon as the TUI is ready. */
   initialPrompt?: string
+  /** A persisted session id to resume exactly (`--resume <id>`); empty means fresh. */
+  resumeId?: string
+  /** Open a recent-session picker instead of starting fresh (`--resume` with no id). */
+  resumeSelect?: boolean
+  /** Print recent sessions and exit (`--list`). */
+  list?: boolean
 }
 ```
 
-Source: [`packages/bundle/tui-app/src/index.ts:51`](../packages/bundle/tui-app/src/index.ts)
+Source: [`packages/bundle/tui-app/src/index.ts:53`](../packages/bundle/tui-app/src/index.ts)
 
 <a id="deepseek-aidsh-typert-loader"></a>
 

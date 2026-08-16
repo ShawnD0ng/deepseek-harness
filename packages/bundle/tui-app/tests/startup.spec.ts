@@ -51,6 +51,9 @@ export const apply = ctx => globalThis.__tuiStartupApply(ctx)
     `  inject: [${TUI_STARTUP_SERVICE}]`,
     '  config:',
     '    initialPrompt: !!js ctx.tuiStartup.initialPrompt',
+    '    resumeId: !!js ctx.tuiStartup.resumeId',
+    '    resumeSelect: !!js ctx.tuiStartup.resumeSelect',
+    '    list: !!js ctx.tuiStartup.list',
     '- id: tui-startup',
     `  name: ${pathToFileURL(join(dir, 'startup.mjs')).href}`,
     '',
@@ -104,8 +107,29 @@ describe('tui command-line provider', () => {
     const { values, observed } = await bootStartup(['--help'])
     expect(observed.out).toContain('dsh tui')
     expect(observed.out).toContain('initial prompt')
+    expect(observed.out).toContain('--resume')
     expect(values).toBeUndefined()
     expect(observed.runnerConfig).toBeUndefined()
     expect(observed.exits).toEqual([0])
+  })
+
+  it('parses the resume id, the bare resume flag, and --list', async () => {
+    const byId = await bootStartup(['--resume', 'session-abc'])
+    expect(byId.values).toEqual({ resumeId: 'session-abc' })
+    expect(byId.observed.runnerConfig).toEqual({ resumeId: 'session-abc' })
+
+    const select = await bootStartup(['--resume'])
+    expect(select.values).toEqual({ resumeSelect: true })
+    expect(select.observed.runnerConfig).toEqual({ resumeSelect: true })
+
+    const list = await bootStartup(['--list'])
+    expect(list.values).toEqual({ list: true })
+    expect(list.observed.runnerConfig).toEqual({ list: true })
+  })
+
+  it('combines a resume id with an initial prompt', async () => {
+    const { values, observed } = await bootStartup(['--resume', 'session-abc', 'continue here'])
+    expect(values).toEqual({ initialPrompt: 'continue here', resumeId: 'session-abc' })
+    expect(observed.runnerConfig).toEqual({ initialPrompt: 'continue here', resumeId: 'session-abc' })
   })
 })

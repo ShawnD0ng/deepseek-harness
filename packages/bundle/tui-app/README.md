@@ -8,6 +8,8 @@ After the Loader settles, the runner reads the shared [`ctx.agentDefaultModel`](
 
 The terminal layer is deterministic and hand-rolled: a wcwidth-based display-width table ([`src/width.ts`](src/width.ts)), an escape-sequence keystroke parser with modified-arrow and alt-character decoding ([`src/keys.ts`](src/keys.ts)), locale-free word navigation ([`src/word.ts`](src/word.ts)), a pure frame composer and row-diff renderer ([`src/render.ts`](src/render.ts)), and a driver seam ([`src/terminal.ts`](src/terminal.ts)) whose production half manages raw mode, the alternate screen, and resize, while `VirtualTerminal` feeds the tests. Output is styled only when `NO_COLOR` is unset; `TERM=dumb` or non-TTY stdio fails loud with a pointer to the headless profile.
 
+A session can be resumed instead of started fresh: `dsh tui --resume <id>` loads the persisted session through `ctx.agents.resume` and replays its log into the transcript, `dsh tui --resume` (no id) opens a recent-session picker from `ctx.sessionQuery` (`↑`/`↓` select, Enter confirm, Esc cancel to a fresh session), and `dsh tui --list` prints recent sessions and exits.
+
 The editor kills by span (`Ctrl+W` backward word, `Alt+D` forward word, `Ctrl+U` to the line start, `Ctrl+K` to the line end) into a small kill ring and yanks with `Ctrl+Y`/`Alt+Y`, and it moves by word with `Alt+B`/`Alt+F` or `Ctrl+←`/`Ctrl+→`. The viewport scrolls by page, by half page (`Ctrl+↑`/`Ctrl+↓`), by line (`Alt+↑`/`Alt+↓`), or jumps between user prompts (`Ctrl+Shift+↑`/`Ctrl+Shift+↓`).
 
 Tools that declare a `card: 'diff'` view through the shared presentation vocabulary ([`dsh-tools`](../../core/tools/README.md)) render in the transcript as colored path, removed, and added lines; other calls keep the generic name-and-arguments fold. When the composition carries [`dsh-token-meter`](../../llm/token-meter/README.md), the status bar shows the measured context tokens after each turn (`ready · ctx 4.3k`).
@@ -24,7 +26,7 @@ None; the runner adds nothing to the request prefix.
 
 ## Known Limitations and Deferred Work
 
-- **One conversation per launch** — `--resume` is not implemented; a fresh session starts on every boot, and prompt history is in-memory only.
+- **No session titles** — the resume picker and `--list` show a session id and creation time; dsh's session-title projection is not wired into the listing.
 - **Single-line input** — the editor soft-wraps long prompts but pasted line breaks collapse to spaces; there is no multi-line editing mode.
 - **Command-name completion only** — Tab completes the leading command token while the line is still a pure command prefix; command arguments get no candidates.
 - **Whitespace-based word navigation** — `Alt+B/F` and the word kills treat any run of non-word, non-space characters (including non-Latin scripts) as one unit; there is no real text segmenter yet.

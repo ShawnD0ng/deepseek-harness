@@ -29,10 +29,13 @@
     - id: tui-startup
       name: '@deepseek-ai/dsh-tui-app/startup'
 
-    # The interactive terminal driver; reads the initial prompt from the
-    # ordinary tuiStartup provider.
+    # The interactive terminal driver; reads the invocation (initial prompt,
+    # resume intent, list) from the ordinary tuiStartup provider.
     - id: tui-runner
       name: '@deepseek-ai/dsh-tui-app'
       inject: [tuiStartup]
       config:
         initialPrompt: !!js ctx.tuiStartup.initialPrompt
+        resumeId: !!js ctx.tuiStartup.resumeId
+        resumeSelect: !!js ctx.tuiStartup.resumeSelect
+        list: !!js ctx.tuiStartup.list

@@ -27,6 +27,9 @@
       "path": "../../core/session"
     },
     {
+      "path": "../../session-query/session-query"
+    },
+    {
       "path": "../../core/tools"
     },
     {

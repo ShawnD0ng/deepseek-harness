@@ -641,6 +641,232 @@ describe('tui-runner', () => {
     await test.ctx.fiber.dispose()
   })
 
+  it('resumes a persisted session and replays its log', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentDefaultModelConfig, { provider: 'test-provider', model: 'test-model' })
+    const terminal = new VirtualTerminal({ width: 60, height: 10 })
+    internals.createTerminal = () => terminal
+    internals.stderr = { write: () => true }
+    const resumeCalls: string[] = []
+    ctx.provide('agents', {
+      create: async () => { throw new Error('unused') },
+      resume: async (options: { resumeSessionId: SessionId }) => {
+        resumeCalls.push(options.resumeSessionId)
+        const session = ctx.sessions.create(options.resumeSessionId)
+        appendTurn(session, 1, createUserMessage({
+          content: [{ type: 'text', text: 'earlier prompt' }],
+          source: { kind: 'user' },
+        }), 'earlier reply')
+        return { agent: { id: session.id, session } as Agent, dispose: () => Promise.resolve() }
+      },
+    })
+    ctx.provide('appExit', () => {})
+    apply(ctx, { resumeId: 'session-abc' })
+    await settle()
+    expect(resumeCalls).toEqual(['session-abc'])
+    expect(terminal.output).toContain('earlier reply')
+    expect(terminal.output).toContain('earlier prompt')
+    await ctx.fiber.dispose()
+  })
+
+  it('picks a session to resume with the arrow-key selector', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentDefaultModelConfig, { provider: 'test-provider', model: 'test-model' })
+    const terminal = new VirtualTerminal({ width: 60, height: 10 })
+    internals.createTerminal = () => terminal
+    internals.stderr = { write: () => true }
+    const resumeCalls: string[] = []
+    ctx.provide('sessionQuery', {
+      listSessions: async () => [
+        { header: { version: 0, id: SessionId('session-new'), createdAt: 200 }, live: false, persisted: true },
+        { header: { version: 0, id: SessionId('session-old'), createdAt: 100 }, live: false, persisted: true },
+      ],
+    })
+    ctx.provide('agents', {
+      create: async () => { throw new Error('unused') },
+      resume: async (options: { resumeSessionId: SessionId }) => {
+        resumeCalls.push(options.resumeSessionId)
+        const session = ctx.sessions.create(options.resumeSessionId)
+        return { agent: { id: session.id, session } as Agent, dispose: () => Promise.resolve() }
+      },
+    })
+    ctx.provide('appExit', () => {})
+    apply(ctx, { resumeSelect: true })
+    await settle()
+    expect(terminal.output).toContain('Resume a session')
+    expect(terminal.output).toContain('session-new')
+    // Unhandled picker keys (ctrl-x, a plain character) are no-ops.
+    terminal.feed('\x18x')
+    await settle()
+    // Up stays at the first entry; down moves to the older session; enter confirms.
+    terminal.feed('\x1b[A\x1b[B\r')
+    await settle()
+    expect(resumeCalls).toEqual(['session-old'])
+    await ctx.fiber.dispose()
+  })
+
+  it('cancels the picker with escape and starts fresh', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentDefaultModelConfig, { provider: 'test-provider', model: 'test-model' })
+    const terminal = new VirtualTerminal({ width: 60, height: 10 })
+    internals.createTerminal = () => terminal
+    internals.stderr = { write: () => true }
+    let created = 0
+    ctx.provide('sessionQuery', {
+      listSessions: async () => [
+        { header: { version: 0, id: SessionId('session-a'), createdAt: 200 }, live: false, persisted: true },
+      ],
+    })
+    ctx.provide('agents', {
+      create: async () => {
+        created += 1
+        const session = ctx.sessions.create(SessionId(`session-fresh-${created}`))
+        return { agent: { id: session.id, session } as Agent, dispose: () => Promise.resolve() }
+      },
+      resume: async () => { throw new Error('unused') },
+    })
+    ctx.provide('appExit', () => {})
+    apply(ctx, { resumeSelect: true })
+    await settle()
+    terminal.feed('\x1b')
+    await settle()
+    expect(created).toBe(1)
+    await ctx.fiber.dispose()
+  })
+
+  it('cancels the picker with ctrl-c and starts fresh', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentDefaultModelConfig, { provider: 'test-provider', model: 'test-model' })
+    const terminal = new VirtualTerminal({ width: 60, height: 10 })
+    internals.createTerminal = () => terminal
+    internals.stderr = { write: () => true }
+    let created = 0
+    ctx.provide('sessionQuery', {
+      listSessions: async () => [
+        { header: { version: 0, id: SessionId('session-a'), createdAt: 200 }, live: false, persisted: true },
+      ],
+    })
+    ctx.provide('agents', {
+      create: async () => {
+        created += 1
+        const session = ctx.sessions.create(SessionId(`session-fresh-${created}`))
+        return { agent: { id: session.id, session } as Agent, dispose: () => Promise.resolve() }
+      },
+      resume: async () => { throw new Error('unused') },
+    })
+    ctx.provide('appExit', () => {})
+    apply(ctx, { resumeSelect: true })
+    await settle()
+    terminal.feed('\x03')
+    await settle()
+    expect(created).toBe(1)
+    await ctx.fiber.dispose()
+  })
+
+  it('starts fresh when the resume picker has no sessions', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentDefaultModelConfig, { provider: 'test-provider', model: 'test-model' })
+    const terminal = new VirtualTerminal({ width: 60, height: 10 })
+    internals.createTerminal = () => terminal
+    internals.stderr = { write: () => true }
+    let created = false
+    ctx.provide('sessionQuery', { listSessions: async () => [] })
+    ctx.provide('agents', {
+      create: async () => {
+        created = true
+        const session = ctx.sessions.create(SessionId('session-fresh'))
+        return { agent: { id: session.id, session } as Agent, dispose: () => Promise.resolve() }
+      },
+      resume: async () => { throw new Error('unused') },
+    })
+    ctx.provide('appExit', () => {})
+    apply(ctx, { resumeSelect: true })
+    await settle()
+    expect(created).toBe(true)
+    expect(terminal.output).toContain('no sessions to resume')
+    await ctx.fiber.dispose()
+  })
+
+  it('lists recent sessions and exits with --list', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentDefaultModelConfig, { provider: 'test-provider', model: 'test-model' })
+    const terminal = new VirtualTerminal({ width: 60, height: 10 })
+    internals.createTerminal = () => terminal
+    let out = ''
+    internals.stdout = { write: (chunk: string) => { out += chunk; return true } } as unknown as (typeof internals)["stdout"]
+    internals.stderr = { write: () => true }
+    ctx.provide('sessionQuery', {
+      listSessions: async () => [
+        { header: { version: 0, id: SessionId('session-new'), createdAt: 200 }, live: false, persisted: true },
+        { header: { version: 0, id: SessionId('session-old'), createdAt: 100 }, live: false, persisted: true },
+      ],
+    })
+    ctx.provide('agents', {
+      create: async () => { throw new Error('unused') },
+      resume: async () => { throw new Error('unused') },
+    })
+    const exitCode = new Promise<number>((resolve) => {
+      ctx.provide('appExit', (code: number) => { resolve(code) })
+    })
+    apply(ctx, { list: true })
+    expect(await exitCode).toBe(0)
+    expect(out).toContain('session-new')
+    expect(out).toContain('session-old')
+    await ctx.fiber.dispose()
+  })
+
+  it('lists live sessions when no session query is composed', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentDefaultModelConfig, { provider: 'test-provider', model: 'test-model' })
+    const terminal = new VirtualTerminal({ width: 60, height: 10 })
+    internals.createTerminal = () => terminal
+    let out = ''
+    internals.stdout = { write: (chunk: string) => { out += chunk; return true } } as unknown as (typeof internals)["stdout"]
+    internals.stderr = { write: () => true }
+    ctx.sessions.create(SessionId('session-live'))
+    ctx.provide('agents', {
+      create: async () => { throw new Error('unused') },
+      resume: async () => { throw new Error('unused') },
+    })
+    const exitCode = new Promise<number>((resolve) => {
+      ctx.provide('appExit', (code: number) => { resolve(code) })
+    })
+    apply(ctx, { list: true })
+    expect(await exitCode).toBe(0)
+    expect(out).toContain('session-live')
+    await ctx.fiber.dispose()
+  })
+
+  it('prints nothing for an empty --list', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentDefaultModelConfig, { provider: 'test-provider', model: 'test-model' })
+    const terminal = new VirtualTerminal({ width: 60, height: 10 })
+    internals.createTerminal = () => terminal
+    let out = ''
+    internals.stdout = { write: (chunk: string) => { out += chunk; return true } } as unknown as (typeof internals)["stdout"]
+    internals.stderr = { write: () => true }
+    ctx.provide('sessionQuery', { listSessions: async () => [] })
+    ctx.provide('agents', {
+      create: async () => { throw new Error('unused') },
+      resume: async () => { throw new Error('unused') },
+    })
+    const exitCode = new Promise<number>((resolve) => {
+      ctx.provide('appExit', (code: number) => { resolve(code) })
+    })
+    apply(ctx, { list: true })
+    expect(await exitCode).toBe(0)
+    expect(out).toBe('')
+    await ctx.fiber.dispose()
+  })
+
   it('submits the initial prompt positional automatically', async () => {
     let prompted!: () => void
     const promptedSignal = new Promise<void>((resolve) => { prompted = resolve })

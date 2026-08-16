@@ -12,7 +12,7 @@ dsh 有浏览器界面和一次性 headless 运行器，但没有交互式终端
 
 `@deepseek-ai/dsh-tui-app` 是叠加在 `dsh-base` 之上的新 profile bundle，结构与 `dsh-headless` 相同：`cordis.patch.yml` 提供 persona、禁用共享 HMR 行、挂载 Code Mode 的 worker，并插入 `tui-startup` 提供者与 `tui-runner` 插件。启动器新增 `tui` profile 模板（`dsh-base` + `dsh-tui-app`）以及 `dsh web` 旁边的 `dsh tui` 别名。
 
-runner 通过 `ctx.agents` 创建一个持久化 Agent，把它的 `session/event` 事件流折叠成有界记录，并在进程 TTY 上驱动全屏界面。终端层是手写的确定性实现：基于 wcwidth 的显示宽度表、带括号粘贴支持、修饰箭头解码与 alt 字符解码的转义序列按键解析器、无区域依赖的单词导航、纯函数帧合成加行差异渲染器，以及一个驱动接缝——其生产实现负责 raw 模式、备用屏幕、窗口尺寸变化与恢复（包括暂停 stdin 以便退出后事件循环可以排空）。设置 `NO_COLOR` 即禁用样式；`TERM=dumb` 或非 TTY 标准流会直接报错并指向 headless profile。
+runner 通过 `ctx.agents` 创建一个持久化 Agent，把它的 `session/event` 事件流折叠成有界记录，并在进程 TTY 上驱动全屏界面。当调用携带会话 id 时改为续接而非新建：`agents.resume` 加载持久化会话并把日志回放进记录，裸 `--resume` 旗标从 `sessionQuery.listSessions` 打开最近会话选择器（`↑`/`↓` 选择、Enter 确认、Esc 取消转新会话），`--list` 打印最近会话并退出。终端层是手写的确定性实现：基于 wcwidth 的显示宽度表、带括号粘贴支持、修饰箭头解码与 alt 字符解码的转义序列按键解析器、无区域依赖的单词导航、纯函数帧合成加行差异渲染器，以及一个驱动接缝——其生产实现负责 raw 模式、备用屏幕、窗口尺寸变化与恢复（包括暂停 stdin 以便退出后事件循环可以排空）。设置 `NO_COLOR` 即禁用样式；`TERM=dumb` 或非 TTY 标准流会直接报错并指向 headless profile。
 
 编辑与滚动模型参考 pi coding agent 的交互式 TUI：单词导航（`Alt+B/F`、`Ctrl+←/→`）、按区间 kill 进小型 kill ring（`Ctrl+W`、`Alt+D`、`Ctrl+U/K`、`Ctrl+Y`/`Alt+Y`）、整页/半页/单行滚动（`Ctrl+↑/↓`、`Alt+↑/↓`）与用户提示词跳转（`Ctrl+Shift+↑/↓`）——在确定性层上重新实现，而不是移植 pi 的框架。
 
@@ -32,8 +32,8 @@ runner 通过 `ctx.agents` 创建一个持久化 Agent，把它的 `session/even
 
 ## Consequences
 
-终端界面只依赖现有交互接缝，因此不含 `dsh-user-questions`、`dsh-user-approval` 或 `dsh-commands` 的自定义组装仍然可以启动，并退化为普通聊天循环。渲染器的 wcwidth 近似（东亚 Ambiguous 按一列、emoji ZWJ 序列按各部分相加）会让特殊字形对不齐，单词导航把任意非单词字符段（含非拉丁文字）当作一个单位；包 README 记录了这些以及其他延期工作（会话恢复、多行输入、持久化历史）。
+终端界面只依赖现有交互接缝，因此不含 `dsh-user-questions`、`dsh-user-approval` 或 `dsh-commands` 的自定义组装仍然可以启动，并退化为普通聊天循环。渲染器的 wcwidth 近似（东亚 Ambiguous 按一列、emoji ZWJ 序列按各部分相加）会让特殊字形对不齐，单词导航把任意非单词字符段（含非拉丁文字）当作一个单位；包 README 记录了这些以及其他延期工作（多行输入、持久化提示词历史、resume 选择器中的会话标题）。
 
 ## Verification
 
-单元套件在 `VirtualTerminal` 上以 100% 每文件覆盖率覆盖宽度计算、按键解码（含修饰箭头与 alt 字符）、单词导航、帧合成与差异、补全、kill-ring 编辑、视口滚动与提示词跳转、经注入 presenter 的 diff 卡片折叠、token-meter 状态更新、历史、记录投影以及完整交互矩阵（提示词、命令、问题、审批、取消、滚动钉住、退出路径）。`apps/cli/tests/tui-pty.e2e.ts` 在 PTY 中对 mock LLM 服务器启动真实的 `dsh tui` profile 树：输入提示词、观察流式回复与 spinner、打开斜杠命令补全弹窗、发送 `/exit`，并断言干净退出且备用屏幕已恢复。
+单元套件在 `VirtualTerminal` 上以 100% 每文件覆盖率覆盖宽度计算、按键解码（含修饰箭头与 alt 字符）、单词导航、帧合成与差异、补全、kill-ring 编辑、视口滚动与提示词跳转、会话续接与选择器、经注入 presenter 的 diff 卡片折叠、token-meter 状态更新、历史、记录投影以及完整交互矩阵（提示词、命令、问题、审批、取消、滚动钉住、退出路径）。`apps/cli/tests/tui-pty.e2e.ts` 在 PTY 中对 mock LLM 服务器启动真实的 `dsh tui` profile 树：输入提示词、观察流式回复与 spinner、打开斜杠命令补全弹窗、发送 `/exit`，并断言干净退出且备用屏幕已恢复。

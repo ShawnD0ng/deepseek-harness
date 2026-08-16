@@ -20,6 +20,8 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type TokenMeter from '@deepseek-ai/dsh-token-meter'
 import type ToolRuntime from '@deepseek-ai/dsh-tools'
+import type SessionQueryEngine from '@deepseek-ai/dsh-session-query'
+import type { SessionRecord } from '@deepseek-ai/dsh-session-query'
 import {
   UserQuestionError,
   type AskUserQuestionAnswerItem,
@@ -51,10 +53,19 @@ export const inject = ['agentDefaultModel', 'agents', 'sessions']
 export interface Config {
   /** The optional first prompt, submitted as soon as the TUI is ready. */
   initialPrompt?: string
+  /** A persisted session id to resume exactly (`--resume <id>`); empty means fresh. */
+  resumeId?: string
+  /** Open a recent-session picker instead of starting fresh (`--resume` with no id). */
+  resumeSelect?: boolean
+  /** Print recent sessions and exit (`--list`). */
+  list?: boolean
 }
 
 export const Config: z<Config> = z.object({
   initialPrompt: z.string().default(''),
+  resumeId: z.string().default(''),
+  resumeSelect: z.boolean().default(false),
+  list: z.boolean().default(false),
 })
 
 /** The process streams the TUI writes to; tests substitute captures. */
@@ -120,19 +131,19 @@ export function apply(ctx: Context, config: Config): void {
   const held: { terminal?: TerminalDriver } = {}
   ctx.effect(() => () => { held.terminal?.restore() })
   const io: TuiIo = { stdin: internals.stdin, stdout: internals.stdout, stderr: internals.stderr }
-  void run(ctx, config.initialPrompt, io, exit, held).catch((error: unknown) => { fail(io, exit, error) })
+  void run(ctx, config, io, exit, held).catch((error: unknown) => { fail(io, exit, error) })
 }
 
 /**
- * Boot the TUI: settle the Loader, create one Agent, drive the terminal.
+ * Boot the TUI: settle the Loader, create or resume one Agent, drive the terminal.
  * @param ctx - plugin context.
- * @param initialPrompt - the optional first prompt, submitted once the interface is ready.
+ * @param config - the resolved invocation (optional initial prompt, resume intent, list).
  * @param io - process-facing effects.
  * @param exit - the launcher's bounded exit request.
  * @param held - terminal holder for the fiber-disposal restore.
  */
 async function run(
-  ctx: Context, initialPrompt: string | undefined, io: TuiIo, exit: (code: number) => void, held: { terminal?: TerminalDriver },
+  ctx: Context, config: Config, io: TuiIo, exit: (code: number) => void, held: { terminal?: TerminalDriver },
 ): Promise<void> {
   // Loader siblings mount concurrently. Await the complete application before
   // creating an Agent so its scoped tools and adapters are not half-composed.
@@ -190,6 +201,7 @@ async function run(
   let killRing: string[] = []
   let yankSpan: { start: number; length: number; text: string; index: number } | undefined
   let contextTokens: number | undefined
+  let picker: { records: SessionRecord[]; selected: number; resolve: (id: string) => void } | undefined
 
   /** Humanize one token count for the status row. */
   function formatTokens(tokens: number): string {
@@ -212,7 +224,13 @@ async function run(
       },
     }
     if (notice !== undefined) input.notice = notice
-    if (current?.kind === 'question') {
+    if (picker !== undefined) {
+      input.question = {
+        title: 'Resume a session',
+        options: picker.records.map(formatSessionLine),
+        selected: picker.selected,
+      }
+    } else if (current?.kind === 'question') {
       // The service admits only non-empty question lists, and pump resets the
       // index per interaction, so the active question always exists.
       const question = current.request.questions[questionIndex]!
@@ -952,8 +970,70 @@ async function run(
     requestRender()
   })
 
+  /** One picker/listing line for a session record. */
+  function formatSessionLine(record: SessionRecord): string {
+    return `${record.header.id}  ${new Date(record.header.createdAt).toISOString()}`
+  }
+
+  /** Recent sessions from the query corpus, newest first, or the live store as a fallback. */
+  async function listRecentSessions(): Promise<SessionRecord[]> {
+    const query = ctx.get('sessionQuery') as SessionQueryEngine | undefined
+    const records = query === undefined
+      ? sessionStore.list().map(session => ({ header: session.header, live: true, persisted: false }))
+      : await query.listSessions()
+    return [...records].sort((left, right) => right.header.createdAt - left.header.createdAt)
+  }
+
+  /** Wait for the user to pick one session, or resolve '' when they cancel. */
+  function pickSession(records: SessionRecord[]): Promise<string> {
+    return new Promise(resolve => {
+      picker = { records, selected: 0, resolve }
+      requestRender()
+    })
+  }
+
+  /** Picker keys: up/down move, enter confirms, escape/ctrl-c cancel to a fresh session. */
+  function handlePickerKey(key: Key): void {
+    // The key dispatch only calls this while a picker is open.
+    const active = picker!
+    switch (key.kind) {
+      case 'up':
+        active.selected = Math.max(0, active.selected - 1)
+        requestRender()
+        break
+      case 'down':
+        active.selected = Math.min(active.records.length - 1, active.selected + 1)
+        requestRender()
+        break
+      case 'enter':
+        // A non-empty list keeps the selection index in bounds.
+        picker = undefined
+        active.resolve(active.records[active.selected]!.header.id)
+        requestRender()
+        break
+      case 'escape':
+        picker = undefined
+        active.resolve('')
+        requestRender()
+        break
+      case 'ctrl':
+        if (key.letter === 'c') {
+          picker = undefined
+          active.resolve('')
+          requestRender()
+        }
+        break
+      default:
+        break
+    }
+  }
+
   const offKey = terminal.onKey((key: Key) => {
     if (exited) return
+    if (picker !== undefined) {
+      handlePickerKey(key)
+      return
+    }
     const pending = current
     if (pending?.kind === 'confirm') handleConfirmKey(key, pending)
     else if (pending?.kind === 'question') handleQuestionKey(key, pending)
@@ -963,17 +1043,51 @@ async function run(
   terminal.onClose(() => { requestExit(0) })
   ctx.effect(() => () => { offKey(); offResize() })
 
-  const { agent } = await agents.create({
-    sessionId: SessionId(`session-${randomUUID()}`),
-    meta: { cwd: process.cwd() },
-    agentOptions: { provider: selection.provider, model: selection.model },
-    setup: (agentCtx) => {
-      const selected: ModelSelectionRef = { current: selection, assembled: undefined }
-      installModelSelection(agentCtx, selected)
-    },
-  })
-  myAgent = agent
-  sessionRef = agent.session
+  // --list: print recent sessions and exit without entering the interface.
+  if (config.list === true) {
+    const records = await listRecentSessions()
+    if (records.length > 0) io.stdout.write(records.map(formatSessionLine).join('\n') + '\n')
+    requestExit(0)
+    return
+  }
+
+  // Resolve the resume intent into a session id (or a fresh session).
+  let resumeId = config.resumeId ?? ''
+  if (resumeId === '' && config.resumeSelect === true) {
+    const records = await listRecentSessions()
+    if (records.length === 0) {
+      notice = 'no sessions to resume'
+      requestRender()
+    } else {
+      resumeId = await pickSession(records)
+    }
+  }
+
+  const setup = (agentCtx: Context): void => {
+    const selected: ModelSelectionRef = { current: selection, assembled: undefined }
+    installModelSelection(agentCtx, selected)
+  }
+
+  if (resumeId !== '') {
+    // Resume the persisted session and replay its log into the transcript.
+    const { agent } = await agents.resume({
+      resumeSessionId: SessionId(resumeId),
+      agentOptions: { provider: selection.provider, model: selection.model },
+      setup,
+    })
+    myAgent = agent
+    sessionRef = agent.session
+    for (const event of agent.session.events) transcript.consume(event)
+  } else {
+    const { agent } = await agents.create({
+      sessionId: SessionId(`session-${randomUUID()}`),
+      meta: { cwd: process.cwd() },
+      agentOptions: { provider: selection.provider, model: selection.model },
+      setup,
+    })
+    myAgent = agent
+    sessionRef = agent.session
+  }
 
   requestRender()
   // Replay a line the user submitted while the Agent was still starting.
@@ -985,8 +1099,8 @@ async function run(
     requestRender()
     submit()
   }
-  if (initialPrompt !== undefined && initialPrompt !== '') {
-    buffer = initialPrompt
+  if (config.initialPrompt !== undefined && config.initialPrompt !== '') {
+    buffer = config.initialPrompt
     cursor = buffer.length
     requestRender()
     submit()
