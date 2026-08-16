@@ -32,6 +32,7 @@ import type { CommandExecution, CommandRuntime } from '@deepseek-ai/dsh-commands
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-cmdline'
 import { PromptHistory } from './history.ts'
+import { commandCandidates, completedCommand } from './complete.ts'
 import type { Key } from './keys.ts'
 import { composeFrame, diffFrames, type Frame, type FrameInput } from './render.ts'
 import { createTtyTerminal, type TerminalDriver, type TtyInput, type TtyOutput } from './terminal.ts'
@@ -168,6 +169,7 @@ async function run(
   let questionIndex = 0
   let selected = 0
   let toggled = new Set<number>()
+  let completion: { options: readonly string[]; selected: number } | undefined
 
   /** Paint one frame; the diff only rewrites changed rows. */
   function render(): void {
@@ -209,6 +211,9 @@ async function run(
       }
     } else {
       input.input = { prompt: '❯ ', value: buffer, cursor, placeholder: 'ask the agent — /help lists commands' }
+      if (completion !== undefined) {
+        input.input.completion = { options: completion.options, selected: completion.selected }
+      }
     }
     const next = composeFrame(input, terminal.width, terminal.height, color)
     terminal.write(diffFrames(prevFrame, next, color))
@@ -265,6 +270,7 @@ async function run(
     toggled = new Set()
     buffer = ''
     cursor = 0
+    completion = undefined
     requestRender()
   }
 
@@ -341,14 +347,111 @@ async function run(
     requestRender()
   }
 
-  /** Shared single-line editing keys (input mode and free-text questions). */
-  function handleEditorKey(key: Key, actions: { submit: () => void; escape: () => void }): void {
+  /** The runtime's command names, or nothing while commands or the Agent are unavailable. */
+  function commandNames(): readonly string[] {
+    const runtime = ctx.get('commands') as CommandRuntime | undefined
+    const agent = myAgent
+    if (runtime === undefined || agent === undefined) return []
+    return runtime.list(agent).map(command => command.name)
+  }
+
+  /**
+   * Open the completion popup for the current buffer, filling the buffer
+   * directly when exactly one command matches.
+   * @returns true when the popup opened or a lone match filled the buffer.
+   */
+  function openCompletion(): boolean {
+    const candidates = commandCandidates(commandNames(), buffer)
+    if (candidates.length === 0) return false
+    completion = { options: candidates, selected: 0 }
+    if (candidates.length === 1) acceptCompletion()
+    else requestRender()
+    return true
+  }
+
+  /** Fill the buffer with the highlighted candidate and close the popup. */
+  function acceptCompletion(): void {
+    // Callers only invoke this with an open popup, whose non-empty
+    // candidates always contain the selection index.
+    const name = completion!.options[completion!.selected]!
+    completion = undefined
+    const applied = completedCommand(name)
+    buffer = applied.value
+    cursor = applied.cursor
+    requestRender()
+  }
+
+  /** Move the popup highlight by one row, wrapping at both ends. */
+  function moveCompletion(delta: 1 | -1): void {
+    // Callers only invoke this with an open popup.
+    const current = completion!
+    const count = current.options.length
+    completion = { options: current.options, selected: (current.selected + delta + count) % count }
+    requestRender()
+  }
+
+  /**
+   * Shared single-line editing keys (input mode and free-text questions).
+   * @param key - the decoded keystroke.
+   * @param actions - submit and escape closures for the owning interaction.
+   * @param complete - whether slash-command completion is armed (input mode only).
+   */
+  function handleEditorKey(key: Key, actions: { submit: () => void; escape: () => void }, complete: boolean): void {
+    switch (key.kind) {
+      case 'up':
+        if (complete && completion !== undefined) {
+          moveCompletion(-1)
+        } else {
+          buffer = history.navigate(1, buffer)
+          cursor = buffer.length
+          requestRender()
+        }
+        break
+      case 'down':
+        if (complete && completion !== undefined) {
+          moveCompletion(1)
+        } else {
+          buffer = history.navigate(-1, buffer)
+          cursor = buffer.length
+          requestRender()
+        }
+        break
+      case 'enter':
+        if (complete && completion !== undefined) acceptCompletion()
+        else actions.submit()
+        break
+      case 'tab':
+        if (complete && completion !== undefined) {
+          acceptCompletion()
+        } else if (complete) {
+          // A popup open (or a lone match accepted) already rendered; fall
+          // through to indentation only when the line is not a command prefix.
+          if (!openCompletion() && !buffer.startsWith('/')) insertChar('  ')
+        } else {
+          insertChar('  ')
+        }
+        break
+      case 'escape':
+        if (complete && completion !== undefined) {
+          completion = undefined
+          requestRender()
+        } else {
+          actions.escape()
+        }
+        break
+      default:
+        // Every editing key dismisses the popup: its list no longer matches.
+        completion = undefined
+        handleEditKey(key)
+        break
+    }
+  }
+
+  /** Editing keys that dismiss the completion popup and edit the line. */
+  function handleEditKey(key: Key): void {
     switch (key.kind) {
       case 'char':
         insertChar(key.char)
-        break
-      case 'enter':
-        actions.submit()
         break
       case 'backspace':
         backspace()
@@ -371,22 +474,6 @@ async function run(
       case 'end':
         cursor = buffer.length
         requestRender()
-        break
-      case 'up':
-        buffer = history.navigate(1, buffer)
-        cursor = buffer.length
-        requestRender()
-        break
-      case 'down':
-        buffer = history.navigate(-1, buffer)
-        cursor = buffer.length
-        requestRender()
-        break
-      case 'tab':
-        insertChar('  ')
-        break
-      case 'escape':
-        actions.escape()
         break
       case 'page-up':
         scroll(1)
@@ -457,6 +544,7 @@ async function run(
     const value = buffer.trim()
     buffer = ''
     cursor = 0
+    completion = undefined
     notice = undefined
     if (value === '') {
       requestRender()
@@ -536,7 +624,7 @@ async function run(
         cursor = 0
         requestRender()
       },
-    })
+    }, true)
   }
 
   /** Question-widget keys for the active question interaction. */
@@ -549,7 +637,7 @@ async function run(
       handleEditorKey(key, {
         submit: () => { finishQuestion(pending, { id: question.id, selected: [], custom: buffer }) },
         escape: () => { abortQuestion(pending) },
-      })
+      }, false)
       return
     }
     switch (key.kind) {

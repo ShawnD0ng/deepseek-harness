@@ -267,6 +267,165 @@ describe('tui-runner', () => {
     await test.ctx.fiber.dispose()
   })
 
+  it('completes a slash command with an arrow-navigable popup and runs it', async () => {
+    const test = await bench({})
+    await test.created
+    await settle()
+    test.ctx.commands.register({
+      name: 'zeta',
+      description: 'sorts last',
+      handler: () => ({ kind: 'success' as const }),
+    })
+    test.ctx.commands.register({
+      name: 'alpha',
+      description: 'sorts first',
+      handler: () => ({ kind: 'success' as const }),
+    })
+    test.terminal.feed('/\t')
+    await settle()
+    // Sorted names: alpha, exit, help, zeta — the popup highlights the first.
+    expect(test.terminal.output).toContain('› /alpha')
+    test.terminal.feed('\x1b[B')
+    await settle()
+    expect(test.terminal.output).toContain('› /exit')
+    test.terminal.feed('\t')
+    await settle()
+    expect(test.terminal.output).toContain('❯ /exit')
+    test.terminal.feed('\r')
+    expect(await test.exitCode).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('wraps the popup selection, closes with escape, and keeps history navigation', async () => {
+    const test = await bench({})
+    await test.created
+    await settle()
+    test.ctx.commands.register({
+      name: 'alpha',
+      description: 'sorts first',
+      handler: () => ({ kind: 'success' as const }),
+    })
+    test.terminal.feed('/\t')
+    await settle()
+    expect(test.terminal.output).toContain('› /alpha')
+    // Up from the first row wraps to the last: alpha, exit, help.
+    test.terminal.feed('\x1b[A')
+    await settle()
+    expect(test.terminal.output).toContain('› /help')
+    // Escape closes the popup but keeps the buffer.
+    test.terminal.feed('\x1b')
+    await settle()
+    expect(test.terminal.output).toContain('❯ /')
+    // With the popup closed, up and down navigate history (empty here).
+    test.terminal.feed('\x1b[A\x1b[B')
+    await settle()
+    expect(test.terminal.output).toContain('❯ /')
+    // A second escape clears the line.
+    test.terminal.feed('\x1b')
+    await settle()
+    expect(test.terminal.output).toContain('❯ ask the agent — /help lists commands')
+    await test.ctx.fiber.dispose()
+  })
+
+  it('accepts a unique match immediately and ignores unmatched prefixes', async () => {
+    const test = await bench({})
+    await test.created
+    await settle()
+    test.ctx.commands.register({
+      name: 'alpha',
+      description: 'the only al… command',
+      handler: () => ({ kind: 'success' as const }),
+    })
+    test.terminal.feed('/al\t')
+    await settle()
+    expect(test.terminal.output).toContain('❯ /alpha')
+    expect(test.terminal.output).not.toContain('› /')
+    test.terminal.feed('\x15')
+    test.terminal.feed('/zz\t')
+    await settle()
+    expect(test.terminal.output).toContain('❯ /zz')
+    expect(test.terminal.output).not.toContain('› /')
+    await test.ctx.fiber.dispose()
+  })
+
+  it('dismisses the popup on editing keys and indents non-command lines', async () => {
+    const test = await bench({})
+    await test.created
+    await settle()
+    test.ctx.commands.register({
+      name: 'alpha',
+      description: 'sorts first',
+      handler: () => ({ kind: 'success' as const }),
+    })
+    test.terminal.feed('/\t')
+    await settle()
+    expect(test.terminal.output).toContain('› /alpha')
+    // Typing edits the line, so the popup closes.
+    test.terminal.feed('x')
+    await settle()
+    expect(test.terminal.output).toContain('❯ /x')
+    test.terminal.feed('\x15')
+    // Tab after a non-command line keeps its two-space indentation.
+    test.terminal.feed('hi\t')
+    await settle()
+    expect(test.terminal.output).toContain('❯ hi  ')
+    await test.ctx.fiber.dispose()
+  })
+
+  it('accepts the highlighted completion on enter without submitting', async () => {
+    const test = await bench({})
+    await test.created
+    await settle()
+    let ran = 0
+    test.ctx.commands.register({
+      name: 'alpha',
+      description: 'counts its runs',
+      handler: () => {
+        ran += 1
+        return { kind: 'success' as const }
+      },
+    })
+    test.terminal.feed('/\t')
+    await settle()
+    // Enter accepts the highlighted command; a second enter runs it.
+    test.terminal.feed('\r')
+    await settle()
+    expect(test.terminal.output).toContain('❯ /alpha')
+    expect(ran).toBe(0)
+    test.terminal.feed('\r')
+    await settle()
+    expect(ran).toBe(1)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('keeps command completion out of free-text question answers', async () => {
+    const test = await bench({})
+    const agent = await test.created
+    const answerPromise = test.ctx.userQuestions.ask({
+      questions: [{ id: 'q1', question: 'say anything' }],
+      agent,
+    })
+    await settle()
+    test.terminal.feed('/\t')
+    await settle()
+    expect(test.terminal.output).not.toContain('› /')
+    expect(test.terminal.output).toContain('❯ /  ')
+    test.terminal.feed('\r')
+    expect(await answerPromise).toEqual({ answers: [{ id: 'q1', selected: [], custom: '/  ' }] })
+    await test.ctx.fiber.dispose()
+  })
+
+  it('opens no popup before the agent exists', async () => {
+    const test = await bench({})
+    // Feed before the Agent finishes starting: completion has no registry view.
+    test.terminal.feed('/\t')
+    await settle()
+    expect(test.terminal.output).not.toContain('› /')
+    expect(test.terminal.output).toContain('❯ /')
+    await test.created
+    await test.ctx.fiber.dispose()
+  })
+
   it('submits the initial prompt positional automatically', async () => {
     let prompted!: () => void
     const promptedSignal = new Promise<void>((resolve) => { prompted = resolve })
@@ -790,6 +949,11 @@ describe('tui-runner editing and lifecycle', () => {
     ctx.provide('appExit', () => {})
     apply(ctx, {})
     await settle()
+    // No command runtime: tab opens no popup and leaves the slash untouched.
+    terminal.feed('/\t')
+    await settle()
+    expect(terminal.output).not.toContain('› /')
+    terminal.feed('\x15')
     terminal.feed('/goal do it\r')
     await settle()
     expect(received).toEqual(['/goal do it'])

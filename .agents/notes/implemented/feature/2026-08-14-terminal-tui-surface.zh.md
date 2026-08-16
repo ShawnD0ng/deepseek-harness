@@ -14,7 +14,7 @@ dsh 有浏览器界面和一次性 headless 运行器，但没有交互式终端
 
 runner 通过 `ctx.agents` 创建一个持久化 Agent，把它的 `session/event` 事件流折叠成有界记录，并在进程 TTY 上驱动全屏界面。终端层是手写的确定性实现：基于 wcwidth 的显示宽度表、带括号粘贴支持的转义序列按键解析器、纯函数帧合成加行差异渲染器，以及一个驱动接缝——其生产实现负责 raw 模式、备用屏幕、窗口尺寸变化与恢复（包括暂停 stdin 以便退出后事件循环可以排空）。设置 `NO_COLOR` 即禁用样式；`TERM=dumb` 或非 TTY 标准流会直接报错并指向 headless profile。
 
-交互全部复用 harness 接缝：runner 注册活动的 `userQuestions` 提供者（就地菜单、多选切换、自由文本回答，均可中止），只为自己拥有的 Agent 回答 `approval/request`（其余请求沿 waterfall 向下委托），并通过 `ctx.commands` 注册 `/exit` 与 `/help`，因此 `/compact`、`/goal` 等组合中的命令无需 TUI 专用代码即可使用。斜杠命令、ask-user 问题与审批共享一个交互队列，问题不会与待处理的审批争抢键盘。可选的首条提示词（`dsh tui "run the tests"`）在界面就绪后提交；在 Agent 创建前输入的提示词会排队等待重放。
+交互全部复用 harness 接缝：runner 注册活动的 `userQuestions` 提供者（就地菜单、多选切换、自由文本回答，均可中止），只为自己拥有的 Agent 回答 `approval/request`（其余请求沿 waterfall 向下委托），并通过 `ctx.commands` 注册 `/exit` 与 `/help`，因此 `/compact`、`/goal` 等组合中的命令无需 TUI 专用代码即可使用。Tab 在行仍是纯命令前缀时从共享注册表（`commands.list`）补全行首命令名：唯一匹配直接填充，多个匹配弹出候选列表，`↑`/`↓` 选择、Tab 或 Enter 接受、Esc 或任意编辑键关闭；同一注册表也驱动 `/help`。斜杠命令、ask-user 问题与审批共享一个交互队列，问题不会与待处理的审批争抢键盘。可选的首条提示词（`dsh tui "run the tests"`）在界面就绪后提交；在 Agent 创建前输入的提示词会排队等待重放。
 
 ## Alternatives considered
 
@@ -30,4 +30,4 @@ runner 通过 `ctx.agents` 创建一个持久化 Agent，把它的 `session/even
 
 ## Verification
 
-单元套件在 `VirtualTerminal` 上以 100% 每文件覆盖率覆盖宽度计算、按键解码、帧合成与差异、历史、记录投影以及完整交互矩阵（提示词、命令、问题、审批、取消、滚动钉住、退出路径）。`apps/cli/tests/tui-pty.e2e.ts` 在 PTY 中对 mock LLM 服务器启动真实的 `dsh tui` profile 树：输入提示词、观察流式回复与 spinner、发送 `/exit`，并断言干净退出且备用屏幕已恢复。
+单元套件在 `VirtualTerminal` 上以 100% 每文件覆盖率覆盖宽度计算、按键解码、帧合成与差异、补全、历史、记录投影以及完整交互矩阵（提示词、命令、问题、审批、取消、滚动钉住、退出路径）。`apps/cli/tests/tui-pty.e2e.ts` 在 PTY 中对 mock LLM 服务器启动真实的 `dsh tui` profile 树：输入提示词、观察流式回复与 spinner、打开斜杠命令补全弹窗、发送 `/exit`，并断言干净退出且备用屏幕已恢复。

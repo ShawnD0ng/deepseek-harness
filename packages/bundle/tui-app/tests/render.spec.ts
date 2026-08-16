@@ -158,6 +158,77 @@ describe('composeFrame', () => {
   })
 })
 
+describe('completion popup', () => {
+  it('renders candidate rows above the input line with the highlighted marker', () => {
+    const frame = composeFrame(frameInput({
+      input: {
+        prompt: '❯ ', value: '/', cursor: 1,
+        completion: { options: ['compact', 'exit', 'goal'], selected: 1 },
+      },
+    }), 10, 10, false)
+    const lines = frame.lines.map(line => line.text)
+    expect(lines).toContain('  /compact')
+    expect(lines).toContain('› /exit')
+    expect(lines).toContain('  /goal')
+    expect(lines).toContain('❯ /')
+    // Three popup rows push the input cursor down by three rows.
+    expect(frame.cursor).toEqual({ row: 8, col: 3 })
+  })
+
+  it('styles the highlighted row when color is on', () => {
+    const frame = composeFrame(frameInput({
+      input: {
+        prompt: '❯ ', value: '/', cursor: 1,
+        completion: { options: ['exit'], selected: 0 },
+      },
+    }), 10, 8, true)
+    const lines = frame.lines.map(line => line.text)
+    expect(lines).toContain('\x1b[36m› /exit\x1b[0m')
+  })
+
+  it('windows long candidate lists around the selection with ellipsis rows', () => {
+    const options = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'a11', 'a12']
+    const top = composeFrame(frameInput({
+      input: { prompt: '❯ ', value: '/', cursor: 1, completion: { options, selected: 0 } },
+    }), 10, 14, false)
+    const topLines = top.lines.map(line => line.text)
+    expect(topLines).toContain('› /a1')
+    expect(topLines).toContain('  /a8')
+    expect(topLines).toContain('…')
+    expect(topLines).not.toContain('  /a9')
+    const bottom = composeFrame(frameInput({
+      input: { prompt: '❯ ', value: '/', cursor: 1, completion: { options, selected: 11 } },
+    }), 10, 14, false)
+    const bottomLines = bottom.lines.map(line => line.text)
+    expect(bottomLines).toContain('…')
+    expect(bottomLines).toContain('  /a5')
+    expect(bottomLines).toContain('› /a12')
+    expect(bottomLines).not.toContain('  /a4')
+  })
+
+  it('truncates candidate rows to the terminal width', () => {
+    const frame = composeFrame(frameInput({
+      input: {
+        prompt: '❯ ', value: '/', cursor: 1,
+        completion: { options: ['compact'], selected: 0 },
+      },
+    }), 8, 10, false)
+    // Footer start: 10 - 1 status - 2 footer rows = 7.
+    expect(frame.lines[7]?.text).toBe('› /compa')
+  })
+
+  it('renders no popup rows for an empty candidate list', () => {
+    const frame = composeFrame(frameInput({
+      input: {
+        prompt: '❯ ', value: '/', cursor: 1,
+        completion: { options: [], selected: 0 },
+      },
+    }), 10, 6, false)
+    expect(frame.lines[4]?.text).toBe('❯ /')
+    expect(frame.cursor).toEqual({ row: 4, col: 3 })
+  })
+})
+
 describe('diffFrames', () => {
   it('paints every row and positions the cursor on the first frame', () => {
     const frame = composeFrame(frameInput(), 10, 4, false)

@@ -32,6 +32,7 @@ marker = b"tui pty reply marker"
 output = bytearray()
 deadline = time.monotonic() + float(timeout_seconds)
 sent_prompt = False
+sent_complete = False
 sent_exit = False
 status = None
 try:
@@ -49,8 +50,15 @@ try:
         if not sent_prompt and b"\x1b[?1049h" in output and b"ask the agent" in output:
             os.write(fd, b"hi there\r")
             sent_prompt = True
-        if sent_prompt and not sent_exit and marker in output:
-            os.write(fd, b"/exit\r")
+        if sent_prompt and not sent_complete and marker in output:
+            # Open the slash-command completion popup.
+            os.write(fd, b"/\t")
+            sent_complete = True
+        if sent_complete and not sent_exit and b"/exit" in output:
+            # The popup lists /exit among its candidates. One write closes it
+            # (esc; doubled so the parser resolves it inside the chunk),
+            # clears the slash (ctrl-u), and runs /exit.
+            os.write(fd, b"\x1b\x1b\x15/exit\r")
             sent_exit = True
         waited, candidate = os.waitpid(pid, os.WNOHANG)
         if waited == pid:
@@ -68,8 +76,11 @@ sys.stdout.buffer.write(output)
 if not sent_prompt:
     sys.stderr.write("tui pty: the TUI never showed its prompt\n")
     sys.exit(124)
-if not sent_exit:
+if not sent_complete:
     sys.stderr.write("tui pty: the mock reply never arrived\n")
+    sys.exit(124)
+if not sent_exit:
+    sys.stderr.write("tui pty: the completion popup never listed /exit\n")
     sys.exit(124)
 if os.waitstatus_to_exitcode(status) != 0:
     sys.stderr.write(f"tui pty: expected exit 0, got {os.waitstatus_to_exitcode(status)}\n")
@@ -138,6 +149,9 @@ describe.skipIf(process.platform === 'win32')('dsh tui (real Loader tree in a PT
       expect(output).toContain('❯')
       expect(output).toContain('hi there')
       expect(output).toContain('tui pty reply marker')
+      // The slash-completion popup opened on tab and listed /exit.
+      expect(output).toContain('› /')
+      expect(output).toContain('/exit')
       expect(output).toContain('\x1b[?1049h') // alternate screen entered
       expect(output).toContain('\x1b[1049l') // and left again on exit
       expect(output).not.toContain('dsh:')

@@ -45,6 +45,16 @@ export interface InputSpec {
   cursor: number
   /** Dimmed hint shown while the buffer is empty. */
   placeholder?: string
+  /** An open slash-command completion popup above the input line. */
+  completion?: CompletionSpec
+}
+
+/** A slash-command completion popup listing candidate command names. */
+export interface CompletionSpec {
+  /** Candidate command names without the leading slash, in display order. */
+  options: readonly string[]
+  /** Index of the highlighted candidate. */
+  selected: number
 }
 
 /** An interactive multiple-choice question (ask-user). */
@@ -219,6 +229,32 @@ function wrapStyled(line: StyledLine, width: number): StyledLine[] {
   return wrapText(line.text, width).map(text => ({ text, ...line.style !== undefined ? { style: line.style } : {} }))
 }
 
+/** Completion popup rows visible at once, excluding ellipsis rows. */
+const POPUP_VISIBLE = 8
+
+/**
+ * Compose the completion popup rows above the input line.
+ * @param completion - the open popup state, if any.
+ * @param width - terminal width in columns.
+ * @param color - whether SGR styling is emitted.
+ * @returns the popup rows, top to bottom.
+ */
+function composeCompletion(completion: CompletionSpec | undefined, width: number, color: boolean): FrameLine[] {
+  if (completion === undefined || completion.options.length === 0) return []
+  const rows: FrameLine[] = []
+  // The window slides only when the selection would leave the capped view,
+  // so the highlighted row is always visible.
+  const start = Math.max(0, Math.min(completion.selected, completion.options.length - POPUP_VISIBLE))
+  if (start > 0) rows.push({ text: styled('…', 'dim', color) })
+  completion.options.slice(start, start + POPUP_VISIBLE).forEach((name, index) => {
+    const selected = start + index === completion.selected
+    const raw = `${selected ? '› ' : '  '}/${name}`
+    rows.push({ text: styled(truncateToWidth(raw, width), selected ? 'cyan' : 'plain', color) })
+  })
+  if (start + POPUP_VISIBLE < completion.options.length) rows.push({ text: styled('…', 'dim', color) })
+  return rows
+}
+
 /**
  * Compose the question/confirm/input footer: rows with SGR codes embedded,
  * plus the input cursor position relative to the footer's top row.
@@ -250,13 +286,15 @@ function composeFooter(input: FrameInput, width: number, color: boolean): { rows
     }).join('  ')
     rows.push({ text: choices })
   } else if (input.input !== undefined) {
+    const completionRows = composeCompletion(input.input.completion, width, color)
+    rows.push(...completionRows)
     const prompt = styled(input.input.prompt, 'cyan', color)
     const promptWidth = displayWidth(input.input.prompt)
     const valueWidth = Math.max(1, width - promptWidth)
     const value = input.input.value
     if (value === '') {
       rows.push({ text: `${prompt}${styled(input.input.placeholder ?? '', 'dim', color)}` })
-      cursor = { row: 0, col: promptWidth }
+      cursor = { row: completionRows.length, col: promptWidth }
     } else {
       const valueLines = wrapText(value, valueWidth)
       valueLines.forEach((line, index) => {
@@ -276,7 +314,10 @@ function composeFooter(input: FrameInput, width: number, color: boolean): { rows
         break
       }
       const cursorCol = displayWidth(value.slice(consumed, input.input.cursor))
-      cursor = { row: cursorRow, col: cursorRow === 0 ? promptWidth + cursorCol : cursorCol }
+      cursor = {
+        row: completionRows.length + cursorRow,
+        col: cursorRow === 0 ? promptWidth + cursorCol : cursorCol,
+      }
     }
   }
   return cursor === undefined ? { rows } : { rows, cursor }
