@@ -150,7 +150,6 @@ export const PROFILE_TEMPLATES: Record<string, ProfileTemplate> = {
   },
   tui: {
     bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-tui-app'],
-    patchReload: 'startup',
   },
 }
 

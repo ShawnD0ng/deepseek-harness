@@ -10,7 +10,7 @@ dsh 有浏览器界面和一次性 headless 运行器，但没有交互式终端
 
 ## Decision
 
-`@deepseek-ai/dsh-tui-app` 是叠加在 `dsh-base` 之上的新 profile bundle，结构与 `dsh-headless` 相同：`cordis.patch.yml` 提供 persona、禁用共享 HMR 行、挂载 Code Mode 的 worker，并插入 `tui-startup` 提供者与 `tui-runner` 插件。启动器新增 `tui` profile 模板（`dsh-base` + `dsh-tui-app`）以及 `dsh web` 旁边的 `dsh tui` 别名。
+`@deepseek-ai/dsh-tui-app` 是叠加在 `dsh-base` 之上的新 profile bundle，结构与 `dsh-headless` 相同：`cordis.patch.yml` 提供 persona、保留 Web 表层的 PTC 模式开关、禁用共享 HMR 行，并插入 `tui-startup` 提供者与 `tui-runner` 插件。启动器新增 `tui` profile 模板（`dsh-base` + `dsh-tui-app`），`dsh tui` 通过 `dsh web` 相同的通用 `<name>` → `--profile <name>` 映射启动它。
 
 runner 通过 `ctx.agents` 创建一个持久化 Agent，把它的 `session/event` 事件流折叠成有界记录，并在进程 TTY 上驱动全屏界面。当调用携带会话 id 时改为续接而非新建：`agents.resume` 加载持久化会话并把日志回放进记录，裸 `--resume` 旗标从 `sessionQuery.listSessions` 打开最近会话选择器（`↑`/`↓` 选择、Enter 确认、Esc 取消转新会话），`--list` 打印最近会话并退出。终端层是手写的确定性实现：基于 wcwidth 的显示宽度表、带括号粘贴支持、修饰箭头解码与 alt 字符解码的转义序列按键解析器、无区域依赖的单词导航、纯函数帧合成加行差异渲染器，以及一个驱动接缝——其生产实现负责 raw 模式、备用屏幕、窗口尺寸变化与恢复（包括暂停 stdin 以便退出后事件循环可以排空）。设置 `NO_COLOR` 即禁用样式；`TERM=dumb` 或非 TTY 标准流会直接报错并指向 headless profile。
 

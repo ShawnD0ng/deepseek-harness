@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -90,12 +90,17 @@ if os.waitstatus_to_exitcode(status) != 0:
 async function runTuiPtySmoke(apiKey: string, baseURL: string): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), 'dsh-tui-pty-'))
   try {
+    const harnessHome = join(cwd, '.dsh')
+    await mkdir(harnessHome, { recursive: true })
+    // The mock server answers only the chat-completions path, while the shipped
+    // adapter default is the Messages protocol; pin the profile to what it serves.
+    await writeFile(join(harnessHome, 'settings.yaml'), 'llm-deepseek:\n  protocol: chat-completions\n')
     const launch = resolveExampleLaunch({
       srcBin: dshBinScript,
       configArgs: ['tui'],
       tsconfigPath,
       env: {
-        DSH_HOME: join(cwd, '.dsh'),
+        DSH_HOME: harnessHome,
         DSH_AGENTS_HOME: join(cwd, '.agents'),
         DEEPSEEK_API_KEY: apiKey,
         DEEPSEEK_BASE_URL: baseURL,

@@ -2,8 +2,9 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
+import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
+import { createInboxStub } from '@deepseek-ai/dsh-agent-loop-testkit'
 import AgentDefaultModelConfig from '@deepseek-ai/dsh-agent-default-model'
 import { MessageId, ToolCallId, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
@@ -92,7 +93,7 @@ async function bench(script: Script, options: {
         id: session.id,
         options: options.agentOptions ?? {},
         session,
-        inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+        inbox: createInboxStub(),
         status: 'idle',
         ctx: agentCtx,
         cancel: () => {},
@@ -106,7 +107,7 @@ async function bench(script: Script, options: {
         inject: () => {},
         whenIdle: () => idle,
       } satisfies Partial<Agent>)
-      await options.setup?.(agentCtx)
+      await options.setup?.(agentCtx, agent)
       ctx.agents.register(agent)
       createdAgent(agent)
       return { agent, dispose: () => Promise.resolve() }
@@ -900,7 +901,7 @@ describe('tui-runner', () => {
           id: session.id,
           options: options.agentOptions ?? {},
           session,
-          inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+          inbox: createInboxStub(),
           status: 'idle',
           ctx: agentCtx,
           cancel: () => {},
@@ -917,7 +918,7 @@ describe('tui-runner', () => {
           inject: () => {},
           whenIdle: () => idle,
         } satisfies Partial<Agent>)
-        await options.setup?.(agentCtx)
+        await options.setup?.(agentCtx, agent)
         ctx.agents.register(agent)
         return { agent, dispose: () => Promise.resolve() }
       },
@@ -1376,7 +1377,7 @@ describe('tui-runner editing and lifecycle', () => {
           id: session.id,
           options: options.agentOptions ?? {},
           session,
-          inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+          inbox: createInboxStub(),
           status: 'idle',
           ctx: agentCtx,
           cancel: () => {},
@@ -1392,7 +1393,7 @@ describe('tui-runner editing and lifecycle', () => {
           inject: () => {},
           whenIdle: () => idle,
         } satisfies Partial<Agent>)
-        await options.setup?.(agentCtx)
+        await options.setup?.(agentCtx, agent)
         ctx.agents.register(agent)
         return { agent, dispose: () => Promise.resolve() }
       },
@@ -1464,7 +1465,7 @@ describe('tui-runner editing and lifecycle', () => {
           id: session.id,
           options: options.agentOptions ?? {},
           session,
-          inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+          inbox: createInboxStub(),
           status: 'idle',
           ctx: agentCtx,
           cancel: () => {},
@@ -1475,7 +1476,7 @@ describe('tui-runner editing and lifecycle', () => {
           inject: () => {},
           whenIdle: () => idle,
         } satisfies Partial<Agent>)
-        await options.setup?.(agentCtx)
+        await options.setup?.(agentCtx, agent)
         ctx.agents.register(agent)
         return { agent, dispose: () => Promise.resolve() }
       },
