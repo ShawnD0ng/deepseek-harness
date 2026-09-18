@@ -18,6 +18,7 @@ English | [中文](README.zh.md)
 - [Further Exploration](#further-exploration)
 - [Model Experience](#model-experience)
 - [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
+- [Dev Note](#dev-note)
 
 -----
 
@@ -102,3 +103,13 @@ None; the runner adds nothing to the request prefix.
 - **Whitespace-based word navigation** — `Alt+B/F` and the word kills treat any run of non-word, non-space characters (including non-Latin scripts) as one unit; there is no real text segmenter yet.
 - **`ctx.appExit` is launcher-owned** — booting the tui profile outside the `dsh` launcher fails loud at activation until the host provides the exit request.
 - **Width approximation** — East Asian Ambiguous code points measure one column, and emoji ZWJ sequences measure as the sum of their parts, so unusual glyphs may misalign until the renderer grows a grapheme-cluster pass.
+
+<a id="dev-note"></a>
+### Dev Note
+
+<details>
+<summary>Working context for maintainers — click to expand</summary>
+
+`PROFILE_TEMPLATES.tui` resolves only because `apps/cli` declares `@deepseek-ai/dsh-tui-app` as a dependency; dropping that edge makes `dsh tui` fail at profile resolution. Frame-level behavior is pinned by this package's unit tests, and the process-level contract by the PTY e2e under `apps/cli/tests`.
+
+</details>

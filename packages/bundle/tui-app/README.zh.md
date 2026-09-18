@@ -18,6 +18,7 @@ kind: "package-bundle"
 - [进一步探索](#further-exploration)
 - [模型体验](#model-experience)
 - [已知限制与延期工作](#known-limitations-and-deferred-work)
+- [开发备注](#dev-note)
 
 -----
 
@@ -103,3 +104,13 @@ runner 在 `/exit`、`Ctrl+D` 或空闲时按 `Ctrl+C` 时通过启动器提供�
 - **单词导航基于空白符** — `Alt+B/F` 与各 kill 操作把任意非单词、非空白字符段（含非拉丁文字）当作一个单位；尚未实现真正的文本分词器。
 - **`ctx.appExit` 由启动器提供** — 在 `dsh` 启动器之外启动 tui profile 时，激活阶段会直接报错，直到宿主提供退出请求。
 - **宽度近似** — 东亚 Ambiguous 码点按一列计算，emoji ZWJ 序列按各部分宽度相加，在渲染器支持字素簇之前，特殊字形可能对不齐。
+
+<a id="dev-note"></a>
+### 开发备注
+
+<details>
+<summary>维护者的工作上下文——点击展开</summary>
+
+`PROFILE_TEMPLATES.tui` 之所以能解析，是因为 `apps/cli` 把 `@deepseek-ai/dsh-tui-app` 声明为依赖；去掉这条依赖会让 `dsh tui` 在 profile 解析阶段失败。帧级行为由本包的单元测试固定，进程级契约由 `apps/cli/tests` 下的 PTY e2e 固定。
+
+</details>
