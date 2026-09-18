@@ -24,9 +24,9 @@ import type SessionQueryEngine from '@deepseek-ai/dsh-session-query'
 import type { SessionRecord } from '@deepseek-ai/dsh-session-query'
 import {
   UserQuestionError,
+  type AskUserQuestionAnswer,
   type AskUserQuestionAnswerItem,
   type AskUserQuestionRequest,
-  type UserQuestionProvider,
   type UserQuestionService,
 } from '@deepseek-ai/dsh-user-questions'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
@@ -773,7 +773,7 @@ async function run(
       return
     }
     try {
-      const execution: CommandExecution | undefined = await commands.execute(agent, line, new AbortController().signal)
+      const execution: CommandExecution | undefined = await commands.execute(agent, line, [], new AbortController().signal)
       if (execution === undefined) {
         notice = `unknown command: ${line}`
       } else if (execution.result.kind === 'success') {
@@ -888,14 +888,16 @@ async function run(
     }
   }
 
-  // Register the in-line ask-user answerer.
+  // Register the in-line ask-user answerer on the scoped request waterfall;
+  // questions for any other agent delegate down to the next answerer.
   const userQuestions = ctx.get('userQuestions') as UserQuestionService | undefined
   if (userQuestions !== undefined) {
-    const provider: UserQuestionProvider = {
-      ask(request: AskUserQuestionRequest): Promise<{ answers: AskUserQuestionAnswerItem[] }> {
+    ctx.on('user-questions/request',
+      (request: AskUserQuestionRequest, next: () => Promise<AskUserQuestionAnswer>) => {
+        if (request.agent !== undefined && request.agent !== myAgent) return next()
         // The service rejects an already-aborted signal at its own entry, so
-        // the provider only races aborts that land while the question is shown.
-        return new Promise((resolve, reject) => {
+        // the answerer only races aborts that land while the question is shown.
+        return new Promise<AskUserQuestionAnswer>((resolve, reject) => {
           const pending: PendingQuestion = { kind: 'question', request, answers: [], resolve, reject }
           const onAbort = (): void => {
             request.signal?.removeEventListener('abort', onAbort)
@@ -905,10 +907,7 @@ async function run(
           queue.push(pending)
           pump()
         })
-      },
-    }
-    const disposeProvider = userQuestions.registerProvider(provider)
-    ctx.effect(() => () => { disposeProvider() })
+      })
   }
 
   // Answer approval requests for the TUI's own agent in line; everything else
@@ -1077,7 +1076,7 @@ async function run(
     })
     myAgent = agent
     sessionRef = agent.session
-    for (const event of agent.session.events) transcript.consume(event)
+    for (const event of agent.session.snapshotEvents()) transcript.consume(event)
   } else {
     const { agent } = await agents.create({
       sessionId: SessionId(`session-${randomUUID()}`),

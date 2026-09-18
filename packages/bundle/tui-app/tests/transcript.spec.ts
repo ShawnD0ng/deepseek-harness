@@ -134,7 +134,7 @@ describe('Transcript', () => {
     const transcript = new Transcript()
     transcript.consume(event('turn/start', { turn: 0 }))
     transcript.consume(event('step/start', { turn: 0, step: 1 }))
-    transcript.consume(event('assistant/chunk', { turn: 0, step: 1, chunk: { kind: 'chunk' } }))
+    transcript.consume(event('session/end-seed', {}))
     transcript.consume(event('step/end', { turn: 0, step: 1 }))
     expect(transcript.view()).toEqual([])
   })

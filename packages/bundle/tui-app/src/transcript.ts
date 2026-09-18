@@ -7,7 +7,8 @@
  * @module @deepseek-ai/dsh-tui-app/transcript
  */
 
-import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { FileDiff, ToolCallView, ToolResult, ToolResultView } from '@deepseek-ai/dsh-tools'
 import type { Style, StyledLine } from './render.ts'

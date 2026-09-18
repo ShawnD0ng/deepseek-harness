@@ -5,7 +5,7 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
 import AgentDefaultModelConfig from '@deepseek-ai/dsh-agent-default-model'
-import { CallId, MessageId, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { MessageId, ToolCallId, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
@@ -14,6 +14,10 @@ import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import { apply, internals } from '../src/index.ts'
 import { VirtualTerminal } from '../src/terminal.ts'
+
+// Frame assertions compare exact plain-text bytes: force the NO_COLOR path
+// regardless of the developer's shell environment.
+process.env.NO_COLOR = '1'
 
 const originalInternals = { ...internals }
 
@@ -38,6 +42,7 @@ function appendTurn(session: Session, turn: number, message: UserMessage, text: 
       content: [{ type: 'text', text }],
       source: { provider: 'test-provider', model: 'test-model' },
     }),
+    stream: [],
   }, { surfaceOp: 'append' })
   session.append('step/end', { turn, step: 1 })
   session.append('turn/end', { turn, reason: { kind: 'completed' } })
@@ -148,6 +153,7 @@ describe('tui-runner', () => {
   it('answers a single-select ask-user question with arrow keys and enter', async () => {
     const test = await bench({})
     const agent = await test.created
+    await settle()
     const answerPromise = test.ctx.userQuestions.ask({
       questions: [{ id: 'q1', question: 'pick one', options: [{ label: 'one' }, { label: 'two' }] }],
       agent,
@@ -162,6 +168,7 @@ describe('tui-runner', () => {
   it('toggles multi-select options with space and submits with enter', async () => {
     const test = await bench({})
     const agent = await test.created
+    await settle()
     const answerPromise = test.ctx.userQuestions.ask({
       questions: [{
         id: 'q1',
@@ -180,6 +187,7 @@ describe('tui-runner', () => {
   it('collects a free-text answer for a question without options', async () => {
     const test = await bench({})
     const agent = await test.created
+    await settle()
     const answerPromise = test.ctx.userQuestions.ask({
       questions: [{ id: 'q1', question: 'what name?' }],
       agent,
@@ -194,6 +202,7 @@ describe('tui-runner', () => {
   it('rejects the asker with ASK_ABORTED when the user escapes a question', async () => {
     const test = await bench({})
     const agent = await test.created
+    await settle()
     const answerPromise = test.ctx.userQuestions.ask({
       questions: [{ id: 'q1', question: 'pick one', options: [{ label: 'one' }, { label: 'two' }] }],
       agent,
@@ -210,7 +219,7 @@ describe('tui-runner', () => {
     await settle()
     agent.session.append('turn/start', { turn: 1 })
     const allowed = test.ctx.approval.request({
-      agent, toolName: 'bash', callId: CallId('call-1'), reason: 'writes files',
+      agent, toolName: 'bash', callId: ToolCallId('call-1'), reason: 'writes files',
     })
     await settle()
     expect(test.terminal.output).toContain('Allow bash?')
@@ -408,6 +417,7 @@ describe('tui-runner', () => {
   it('keeps command completion out of free-text question answers', async () => {
     const test = await bench({})
     const agent = await test.created
+    await settle()
     const answerPromise = test.ctx.userQuestions.ask({
       questions: [{ id: 'q1', question: 'say anything' }],
       agent,
@@ -617,7 +627,7 @@ describe('tui-runner', () => {
     const agent = await test.created
     await settle()
     agent.session.append('tool/call', {
-      turn: 1, step: 1, callId: CallId('c1'), name: 'edit', arguments: '{"path":"a.ts"}',
+      turn: 1, step: 1, callId: ToolCallId('c1'), name: 'edit', arguments: '{"path":"a.ts"}',
     })
     await settle()
     expect(test.terminal.output).toContain('Edit a.ts')
@@ -629,8 +639,8 @@ describe('tui-runner', () => {
       message: {
         role: 'user',
         id: MessageId('r1'),
-        content: [{ type: 'tool-result', toolCallId: CallId('c1'), content: [{ type: 'text', text: 'done' }] }],
-        source: { kind: 'tool', callId: CallId('c1') },
+        content: [{ type: 'tool-result', toolCallId: ToolCallId('c1'), content: [{ type: 'text', text: 'done' }] }],
+        source: { kind: 'tool', callId: ToolCallId('c1') },
       },
     }, { surfaceOp: 'append' })
     await settle()
@@ -1252,6 +1262,7 @@ describe('tui-runner editing and lifecycle', () => {
               content: [{ type: 'text', text: `line ${index}` }],
               source: { provider: 'test-provider', model: 'test-model' },
             }),
+            stream: [],
           }, { surfaceOp: 'append' })
         }
       },
@@ -1748,6 +1759,7 @@ describe('tui-runner final interaction branches', () => {
               content: [{ type: 'text', text: `line ${index}` }],
               source: { provider: 'test-provider', model: 'test-model' },
             }),
+            stream: [],
           }, { surfaceOp: 'append' })
         }
       },
@@ -1768,6 +1780,7 @@ describe('tui-runner final interaction branches', () => {
         content: [{ type: 'text', text: 'line 30' }],
         source: { provider: 'test-provider', model: 'test-model' },
       }),
+      stream: [],
     }, { surfaceOp: 'append' })
     await settle()
     expect(topRows().at(-1)).toBe('line 16')
